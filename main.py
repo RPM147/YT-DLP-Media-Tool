@@ -20,22 +20,21 @@ from PyQt6.QtWidgets import (
     QProgressBar, QFileDialog, QFrame, QScrollArea, QSizePolicy,
     QDialog, QRadioButton, QListWidget, QListWidgetItem,
     QAbstractItemView, QMenu, QStackedWidget, QTabWidget,
-    QTextEdit, QToolButton, QGraphicsDropShadowEffect, QSplitter,
-    QSlider, QSpinBox
+    QTextEdit, QSlider, QSpinBox
 )
 from PyQt6.QtCore import (
-    Qt, pyqtSignal, QObject, QTimer, QUrl, QPointF,
-    QPropertyAnimation, QEasingCurve, QRect, QSize
+    Qt, pyqtSignal, QObject, QTimer, QUrl, QPointF, QRect
 )
 from PyQt6.QtGui import (
-    QPixmap, QImage, QColor, QPalette, QLinearGradient, QRadialGradient,
+    QPixmap, QImage, QColor, QPalette, QLinearGradient,
     QPainter, QBrush, QPen, QFont, QDesktopServices, QPolygonF,
-    QFontMetrics, QIcon, QCursor
+    QIcon
 )
 
 from downloader import (
     Downloader, AUDIO_FORMATS, VIDEO_FORMATS,
-    AUDIO_QUALITIES, VIDEO_QUALITIES, SUPPORTED_BROWSERS
+    AUDIO_QUALITIES, VIDEO_QUALITIES, SUPPORTED_BROWSERS,
+    BROWSER_PROFILE_PATHS
 )
 
 # ═══════════════════════════════════════════════════════════
@@ -940,7 +939,6 @@ class CookieDialog(QDialog):
         if self.rb_browser.isChecked():
             chosen = SUPPORTED_BROWSERS[self.browser_combo.currentIndex()]
             # Warn if the browser profile directory cannot be found on this system
-            from downloader import Downloader as _DL, BROWSER_PROFILE_PATHS
             paths = BROWSER_PROFILE_PATHS.get(chosen, [])
             profile_found = any(os.path.isdir(p) for p in paths)
             if not profile_found:
@@ -1742,8 +1740,9 @@ class DownloadPage(QWidget):
 #  QUEUE PAGE
 # ═══════════════════════════════════════════════════════════
 class QueuePage(QWidget):
-    request_start = pyqtSignal()
-    request_clear = pyqtSignal()
+    request_start  = pyqtSignal()
+    request_clear  = pyqtSignal()
+    request_remove = pyqtSignal(int)   # Fix 9: index ile remove sinyali
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1809,17 +1808,20 @@ class QueuePage(QWidget):
         remove = menu.addAction("🗑  Kuyruktan kaldır")
         act    = menu.exec(self.list_widget.mapToGlobal(pos))
         if act == remove:
-            self._queue.pop(idx)
-            self.refresh(self._queue)
+            self.request_remove.emit(idx)   # Fix 9: MainWindow._queue'yu güncelle
 
 
 # ═══════════════════════════════════════════════════════════
 #  HISTORY PAGE
 # ═══════════════════════════════════════════════════════════
 class HistoryPage(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, max_history: int = 50, parent=None):
         super().__init__(parent)
-        self._history: list[dict] = load_history()
+        raw = load_history()
+        # Fix 13: yüklenirken de max_history limitini uygula
+        self._history: list[dict] = raw[:max_history]
+        if len(raw) > max_history:
+            save_history(self._history)   # kırpılmış listeyi geri yaz
         self._build()
 
     def _build(self):
@@ -2085,10 +2087,11 @@ class MainWindow(QMainWindow):
         self.q_page = QueuePage()
         self.q_page.request_start.connect(self._start_queue)
         self.q_page.request_clear.connect(self._clear_queue)
+        self.q_page.request_remove.connect(self._remove_from_queue)   # Fix 9
         return self.q_page
 
     def _make_history_page(self) -> HistoryPage:
-        self.hist_page = HistoryPage()
+        self.hist_page = HistoryPage(max_history=self.settings.get("max_history", 50))
         return self.hist_page
 
     def _make_logs_page(self) -> LogsPage:
@@ -2112,7 +2115,14 @@ class MainWindow(QMainWindow):
         self.logs_page.append(f"Bilgi alınıyor: {url}")
 
         def run():
-            info = self.downloader.get_info(url, flat_playlist=False)
+            try:
+                info = self.downloader.get_info(url, flat_playlist=False)
+            except RuntimeError as e:
+                if "COOKIE_DB_LOCKED" in str(e):
+                    self.bridge.error.emit("COOKIE_DB_LOCKED")
+                    self.bridge.complete.emit({"_type": "info_only", "info": None})
+                    return
+                info = None
             if not info:
                 self.bridge.complete.emit({"_type": "info_only", "info": None})
                 return
@@ -2135,11 +2145,12 @@ class MainWindow(QMainWindow):
         self.logs_page.append(f"İndirme başladı: {item.url}")
         self.downloader.start(
             item.url, item.quality, item.fmt, item.output_dir,
-            subtitles      = item.subtitles,
-            audio_quality  = item.audio_quality,
-            playlist_items = item.playlist_items,
-            embed_thumbnail= item.embed_thumbnail,
-            write_description=item.write_description,
+            subtitles           = item.subtitles,
+            audio_quality       = item.audio_quality,
+            playlist_items      = item.playlist_items,
+            embed_thumbnail     = item.embed_thumbnail,
+            write_description   = item.write_description,
+            concurrent_fragments= self.settings.get("concurrent_fragments", 4),
         )
 
     def _cancel(self):
@@ -2150,14 +2161,15 @@ class MainWindow(QMainWindow):
         self.dl_page.set_status("Kuyruk için bilgi alınıyor…", TEXT3)
 
         def fetch():
-            info  = self.downloader.get_info(item.url, flat_playlist=False)
-            title = ""
-            if info:
-                if info.get("_type") in ("playlist", "multi_video") or "entries" in info:
-                    title = info.get("title") or item.url
-                else:
-                    title = info.get("title") or item.url
-            item.title = title or item.url
+            try:
+                info = self.downloader.get_info(item.url, flat_playlist=False)
+            except RuntimeError as e:
+                if "COOKIE_DB_LOCKED" in str(e):
+                    self.bridge.error.emit("COOKIE_DB_LOCKED")
+                    return
+                info = None
+            title = (info.get("title") if info else None) or item.url
+            item.title = title
             self.bridge.info_fetched.emit(item)
 
         threading.Thread(target=fetch, daemon=True).start()
@@ -2183,6 +2195,12 @@ class MainWindow(QMainWindow):
     def _clear_queue(self):
         self._queue.clear()
         self.q_page.refresh(self._queue)
+
+    def _remove_from_queue(self, idx: int):
+        """Fix 9: MainWindow._queue ve QueuePage._queue tutarlı kalsın."""
+        if 0 <= idx < len(self._queue):
+            self._queue.pop(idx)
+            self.q_page.refresh(self._queue)
 
     def _run_next_in_queue(self):
         pending = [q for q in self._queue if q.status == "queued"]
@@ -2243,21 +2261,49 @@ class MainWindow(QMainWindow):
 
         # History
         if isinstance(info, dict):
-            title    = info.get('title', 'Bilinmiyor')
-            ext      = info.get('ext', '')
-            size_mb  = (info.get('filesize') or info.get('filesize_approx') or 0) / (1024*1024)
-            url      = info.get('webpage_url') or info.get('url', '')
-            ts       = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-            entry    = {
-                "title":      title,
-                "ext":        ext,
-                "size_mb":    round(size_mb, 2),
-                "url":        url,
-                "timestamp":  ts,
-                "output_dir": self._pending.output_dir if self._pending else "",
-            }
-            self.hist_page.add_entry(entry, self.settings.get("max_history", 50))
-            self.logs_page.append(f"Tamamlandı: {title}", GREEN)
+            entries = info.get('entries')
+            if entries:
+                # Playlist indirmesi — her video için ayrı geçmiş kaydı ekle
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    e_title   = entry.get('title', 'Bilinmiyor')
+                    e_ext     = entry.get('ext', '')
+                    e_size_mb = (entry.get('filesize') or entry.get('filesize_approx') or 0) / (1024*1024)
+                    e_url     = entry.get('webpage_url') or entry.get('url', '')
+                    e_ts      = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                    e_entry   = {
+                        "title":      e_title,
+                        "ext":        e_ext,
+                        "size_mb":    round(e_size_mb, 2),
+                        "url":        e_url,
+                        "timestamp":  e_ts,
+                        "output_dir": self._pending.output_dir if self._pending else "",
+                    }
+                    self.hist_page.add_entry(e_entry, self.settings.get("max_history", 50))
+                pl_title = info.get('title', 'Playlist')
+                self.logs_page.append(f"Tamamlandı (playlist): {pl_title} — {len(entries)} video", GREEN)
+            else:
+                title    = info.get('title', 'Bilinmiyor')
+                ext      = info.get('ext', '')
+                size_mb  = (info.get('filesize') or info.get('filesize_approx') or 0) / (1024*1024)
+                url      = info.get('webpage_url') or info.get('url', '')
+                ts       = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                entry    = {
+                    "title":      title,
+                    "ext":        ext,
+                    "size_mb":    round(size_mb, 2),
+                    "url":        url,
+                    "timestamp":  ts,
+                    "output_dir": self._pending.output_dir if self._pending else "",
+                }
+                self.hist_page.add_entry(entry, self.settings.get("max_history", 50))
+                self.logs_page.append(f"Tamamlandı: {title}", GREEN)
+
+            # Fix 5: webm + thumbnail uyarısı
+            if info.get('_webm_thumb_skipped'):
+                self._toast("webm formatında küçük resim gömme desteklenmiyor — atlandı", YELLOW)
+                self.logs_page.append("Uyarı: webm formatında küçük resim gömme desteklenmiyor", YELLOW)
 
         if self._queue_running:
             for q in self._queue:
@@ -2379,13 +2425,36 @@ class MainWindow(QMainWindow):
 
     def _toast(self, text: str, color: str = GREEN):
         t = Toast(self, text, color)
-        win_geo = self.geometry()
-        tw = t.width()
-        th = t.height()
-        x  = win_geo.x() + win_geo.width()  - tw - 24
-        y  = win_geo.y() + win_geo.height() - th - 48
-        t.move(x, y)
+
+        def _reposition():
+            try:
+                win_geo = self.geometry()
+                tw = t.width()
+                th = t.height()
+                x  = win_geo.x() + win_geo.width()  - tw - 24
+                y  = win_geo.y() + win_geo.height() - th - 48
+                t.move(x, y)
+            except RuntimeError:
+                pass
+
+        _reposition()
         t.show()
+
+        # Fix 12: pencere yeniden boyutlandırılınca toast'ı yeniden konumlandır
+        _resize_conn = [None]
+
+        def _on_resize(event):
+            _reposition()
+
+        _orig_resize = self.resizeEvent
+
+        def _patched_resize(event):
+            _orig_resize(event)
+            _reposition()
+
+        # Sadece bu toast yaşarken resizeEvent'i wrap et
+        self.resizeEvent = _patched_resize
+        t.destroyed.connect(lambda: setattr(self, 'resizeEvent', _orig_resize))
         
 
 

@@ -84,13 +84,13 @@ class Downloader:
     def start(self, url, quality, fmt, output_dir,
               subtitles=False, audio_quality="192",
               playlist_items=None, embed_thumbnail=False,
-              write_description=False):
+              write_description=False, concurrent_fragments=4):
         self._cancel_flag = False
         threading.Thread(
             target=self._download,
             args=(url, quality, fmt, output_dir,
                   subtitles, audio_quality, playlist_items,
-                  embed_thumbnail, write_description),
+                  embed_thumbnail, write_description, concurrent_fragments),
             daemon=True
         ).start()
 
@@ -105,6 +105,11 @@ class Downloader:
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 return ydl.extract_info(url, download=False)
+        except DownloadError as e:
+            err = str(e)
+            if "Could not copy" in err and "cookie" in err.lower():
+                raise RuntimeError("COOKIE_DB_LOCKED") from e
+            return None
         except Exception:
             return None
 
@@ -161,18 +166,42 @@ class Downloader:
 
     def _download(self, url, quality, fmt, output_dir,
                   subtitles, audio_quality, playlist_items,
-                  embed_thumbnail, write_description):
+                  embed_thumbnail, write_description,
+                  concurrent_fragments=4):
         is_audio = (quality == "Audio Only")
 
+        # Video/ses kaynak formatlarını çıktı formatına göre belirle.
+        # mp4  → mp4 video + m4a ses (en uyumlu)
+        # webm → webm video + webm/opus ses (FFmpeg sorunsuz birleştirir)
+        # mkv  → herhangi video + herhangi ses (mkv hepsini kabul eder)
+        if not is_audio and fmt == "webm":
+            _vext, _aext = "webm", "webm"
+        elif not is_audio and fmt == "mkv":
+            # mkv için kaynak formatı kısıtlamıyoruz; en iyi kaliteyi al
+            _vext, _aext = None, None
+        else:
+            _vext, _aext = "mp4", "m4a"
+
+        def _fmt(vext, aext, height=None):
+            h = f"[height<={height}]" if height else ""
+            if vext and aext:
+                # Belirli kaynak formatı iste, bulamazsa kısıtsız en iyi kombinasyonu al
+                return (f"bestvideo{h}[ext={vext}]+bestaudio[ext={aext}]"
+                        f"/bestvideo{h}+bestaudio"
+                        + (f"/best{h}" if height else "/best"))
+            else:
+                # mkv: kaynak format kısıtlaması yok
+                return f"bestvideo{h}+bestaudio/best{h}" if height else "bestvideo+bestaudio/best"
+
         format_map = {
-            "Best Quality": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
-            "2160p":  "bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best[height<=2160]",
-            "1440p":  "bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440]",
-            "1080p":  "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-            "720p":   "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]",
-            "480p":   "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]",
-            "360p":   "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360]",
-            "Audio Only": "bestaudio/best",
+            "Best Quality": _fmt(_vext, _aext),
+            "2160p":        _fmt(_vext, _aext, 2160),
+            "1440p":        _fmt(_vext, _aext, 1440),
+            "1080p":        _fmt(_vext, _aext, 1080),
+            "720p":         _fmt(_vext, _aext, 720),
+            "480p":         _fmt(_vext, _aext, 480),
+            "360p":         _fmt(_vext, _aext, 360),
+            "Audio Only":   "bestaudio/best",
         }
         fmt_str = format_map.get(quality, "best")
 
@@ -182,7 +211,7 @@ class Downloader:
             'progress_hooks':  [self._progress_hook],
             'quiet':           True,
             'no_warnings':     True,
-            'concurrent_fragment_downloads': 4,
+            'concurrent_fragment_downloads': concurrent_fragments,
         }
 
         if playlist_items:
@@ -196,13 +225,25 @@ class Downloader:
             pp = [{'key': 'FFmpegExtractAudio', 'preferredcodec': codec, 'preferredquality': pq}]
             if embed_thumbnail:
                 pp.append({'key': 'EmbedThumbnail'})
-            ydl_opts['postprocessors']   = pp
-            ydl_opts['writethumbnail']   = embed_thumbnail
+            ydl_opts['postprocessors'] = pp
+            if embed_thumbnail:
+                ydl_opts['writethumbnail']       = True
+                ydl_opts['postprocessor_args']   = {'EmbedThumbnail': []}
         else:
             ydl_opts['merge_output_format'] = fmt
             if embed_thumbnail:
-                ydl_opts['postprocessors'] = [{'key': 'EmbedThumbnail'}]
-                ydl_opts['writethumbnail'] = True
+                # webm thumbnail embedding desteklenmiyor — sessizce atla, kullanıcı uyarılacak
+                # (hata on_error ile "WEBM_THUMB_UNSUPPORTED" olarak iletilir)
+                if fmt == "webm":
+                    # webm desteklenmez; thumbnail gömmeden devam et
+                    pass
+                else:
+                    # mp4, mkv ve diğer desteklenen formatlar için EmbedThumbnail ekle
+                    ydl_opts['postprocessors'] = [
+                        {'key': 'FFmpegMetadata'},
+                        {'key': 'EmbedThumbnail', 'already_have_thumbnail': False},
+                    ]
+                    ydl_opts['writethumbnail'] = True
 
         if subtitles:
             ydl_opts.update({
@@ -215,12 +256,22 @@ class Downloader:
         if write_description:
             ydl_opts['writedescription'] = True
 
+        # webm+thumbnail kombinasyonunu işaretle — indirme sonrası uyarı gösterilecek
+        _webm_thumb_skipped = (not is_audio and fmt == "webm" and embed_thumbnail)
+
         self._apply_cookie_opts(ydl_opts)
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 self._ydl = ydl
                 info = ydl.extract_info(url, download=True)
+                # Fix 10: merge/postprocess aşamasında iptal isteğini kontrol et
+                if self._cancel_flag:
+                    self.on_error("Cancelled")
+                    return
+                if _webm_thumb_skipped and isinstance(info, dict):
+                    info = dict(info)
+                    info['_webm_thumb_skipped'] = True
                 self.on_complete(info)
         except DownloadError as e:
             err = str(e)
