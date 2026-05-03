@@ -3,7 +3,6 @@
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?style=for-the-badge&logo=python)
 ![PyQt6](https://img.shields.io/badge/PyQt6-v6.4+-green?style=for-the-badge&logo=qt)
 ![yt-dlp](https://img.shields.io/badge/Powered%20By-yt--dlp-red?style=for-the-badge)
-![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)
 
 **RPM's Media Tool**, YouTube, Instagram, TikTok, Twitter (X) ve daha yüzlerce platformdan yüksek kalitede video ve ses indirmenize olanak tanıyan, modern arayüzlü ve güçlü bir masaüstü uygulamasıdır. `yt-dlp` motoru üzerine inşa edilmiş olup, kullanıcı dostu bir deneyim sunar.
 
