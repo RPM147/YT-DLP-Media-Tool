@@ -35,7 +35,7 @@
 1. Depoyu klonlayın:
    ```bash
    git clone https://github.com/Furkan-FS/YT-DLP-Media-Tool.git
-   cd rpms-media-tool
+   cd yt-dlp-media-tool
    ```
 
 2. Gerekli kütüphaneleri yükleyin:
