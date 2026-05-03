@@ -20,10 +20,11 @@ from PyQt6.QtWidgets import (
     QProgressBar, QFileDialog, QFrame, QScrollArea, QSizePolicy,
     QDialog, QRadioButton, QListWidget, QListWidgetItem,
     QAbstractItemView, QMenu, QStackedWidget, QTabWidget,
-    QTextEdit, QSlider, QSpinBox
+    QTextEdit, QToolButton, QSpinBox
 )
 from PyQt6.QtCore import (
-    Qt, pyqtSignal, QObject, QTimer, QUrl, QPointF, QRect
+    Qt, pyqtSignal, QObject, QTimer, QUrl, QPointF,
+    QRect, QSize
 )
 from PyQt6.QtGui import (
     QPixmap, QImage, QColor, QPalette, QLinearGradient,
@@ -34,15 +35,15 @@ from PyQt6.QtGui import (
 from downloader import (
     Downloader, AUDIO_FORMATS, VIDEO_FORMATS,
     AUDIO_QUALITIES, VIDEO_QUALITIES, SUPPORTED_BROWSERS,
-    BROWSER_PROFILE_PATHS
+    BROWSER_PROFILE_PATHS, THUMBNAIL_EMBED_SUPPORTED
 )
 
 # ═══════════════════════════════════════════════════════════
 #  THEME  — Catppuccin Mocha inspired
 # ═══════════════════════════════════════════════════════════
-BG0      = "#11111b"   # crust
-BG1      = "#1e1e2e"   # base
-BG2      = "#181825"   # mantle
+BG0      = "#11111b"
+BG1      = "#1e1e2e"
+BG2      = "#181825"
 SURFACE0 = "#313244"
 SURFACE1 = "#45475a"
 SURFACE2 = "#585b70"
@@ -106,7 +107,6 @@ def load_settings() -> dict:
         result = DEFAULT_SETTINGS.copy()
         for k, default_v in DEFAULT_SETTINGS.items():
             raw = data.get(k, default_v)
-            # Enforce same type as default; fall back to default on mismatch
             if not isinstance(raw, type(default_v)):
                 raw = default_v
             result[k] = raw
@@ -494,7 +494,7 @@ def label(text: str, size: int = 13, color: str = TEXT,
     return lbl
 
 
-def card(layout: QVBoxLayout | QHBoxLayout | None = None) -> QWidget:
+def card(layout=None) -> QWidget:
     w = QWidget()
     w.setObjectName("card")
     if layout is not None:
@@ -515,7 +515,7 @@ class SpeedGraph(QWidget):
         self._samples: list[float] = []
         self.setFixedHeight(56)
         self.setMinimumWidth(100)
-        self._color = QColor(BLUE)
+        self._color      = QColor(BLUE)
         self._empty_text = "Download speed graph"
 
     def set_color(self, hex_color: str):
@@ -538,7 +538,6 @@ class SpeedGraph(QWidget):
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             w, h = self.width(), self.height()
 
-            # background
             p.setBrush(QBrush(QColor(SURFACE0)))
             p.setPen(Qt.PenStyle.NoPen)
             p.drawRoundedRect(0, 0, w, h, 6, 6)
@@ -581,9 +580,9 @@ class SpeedGraph(QWidget):
 class DownloadButton(QPushButton):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._hovered  = False
-        self._pressed  = False
-        self._phase    = 0.0
+        self._hovered = False
+        self._pressed = False
+        self._phase   = 0.0
         self._c1 = QColor(DL_A)
         self._c2 = QColor(DL_B)
         self._c3 = QColor(DL_C)
@@ -599,8 +598,8 @@ class DownloadButton(QPushButton):
         if self._hovered:
             self.update()
 
-    def enterEvent(self, e):  self._hovered = True;  self.update(); super().enterEvent(e)
-    def leaveEvent(self, e):  self._hovered = False; self.update(); super().leaveEvent(e)
+    def enterEvent(self, e):        self._hovered = True;  self.update(); super().enterEvent(e)
+    def leaveEvent(self, e):        self._hovered = False; self.update(); super().leaveEvent(e)
     def mousePressEvent(self, e):   self._pressed = True;  self.update(); super().mousePressEvent(e)
     def mouseReleaseEvent(self, e): self._pressed = False; self.update(); super().mouseReleaseEvent(e)
 
@@ -608,7 +607,7 @@ class DownloadButton(QPushButton):
         p = QPainter(self)
         try:
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
-            r = self.rect().adjusted(1, 1, -1, -1) if self._pressed else self.rect()
+            r      = self.rect().adjusted(1, 1, -1, -1) if self._pressed else self.rect()
             radius = 12
 
             g = QLinearGradient(0, 0, r.width(), 0)
@@ -627,7 +626,6 @@ class DownloadButton(QPushButton):
             p.setBrush(QBrush(g))
             p.drawRoundedRect(r, radius, radius)
 
-            # top gloss
             hi = QLinearGradient(0, r.top(), 0, r.top() + r.height() * 0.45)
             hi.setColorAt(0, QColor(255, 255, 255, 30 if self._hovered else 15))
             hi.setColorAt(1, QColor(255, 255, 255, 0))
@@ -689,13 +687,17 @@ class SidebarButton(QPushButton):
             p.setPen(QPen(ic_color))
             f = QFont("Segoe UI", 16)
             p.setFont(f)
-            p.drawText(QRect(14, 0, 30, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter, self._icon_text)
+            p.drawText(QRect(14, 0, 30, r.height()),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter,
+                       self._icon_text)
 
             lbl_color = QColor(BLUE if self._active else TEXT2)
             p.setPen(QPen(lbl_color))
-            f2 = QFont("Segoe UI", 12, QFont.Weight.Bold if self._active else QFont.Weight.Normal)
+            f2 = QFont("Segoe UI", 12,
+                       QFont.Weight.Bold if self._active else QFont.Weight.Normal)
             p.setFont(f2)
-            p.drawText(QRect(50, 0, r.width() - 58, r.height()), Qt.AlignmentFlag.AlignVCenter, self._label_text)
+            p.drawText(QRect(50, 0, r.width() - 58, r.height()),
+                       Qt.AlignmentFlag.AlignVCenter, self._label_text)
         finally:
             p.end()
 
@@ -709,6 +711,7 @@ class Toast(QWidget):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self._parent = parent
 
         lay = QHBoxLayout(self)
         lay.setContentsMargins(16, 10, 16, 10)
@@ -731,12 +734,20 @@ class Toast(QWidget):
         """)
         self.adjustSize()
 
+        self._reposition()
 
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._anim_out = QTimer(self)
         self._anim_out.setSingleShot(True)
-        self._anim_out.timeout.connect(lambda: self.deleteLater())
+        self._anim_out.timeout.connect(self.close)  # deleteLater yerine close
         self._anim_out.start(duration)
 
+    def _reposition(self):
+        if self._parent:
+            geo = self._parent.geometry()
+            x   = geo.x() + geo.width()  - self.width()  - 24
+            y   = geo.y() + geo.height() - self.height() - 48
+            self.move(x, y)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -753,7 +764,6 @@ class PlaylistDialog(QDialog):
         root.setContentsMargins(24, 24, 24, 20)
         root.setSpacing(14)
 
-        # Header
         hdr = QHBoxLayout()
         hdr.addWidget(label(f"🎵 {len(entries)} video bulundu", 16, TEXT, bold=True))
         hdr.addStretch()
@@ -763,7 +773,6 @@ class PlaylistDialog(QDialog):
 
         root.addWidget(label("İndirmek istediğiniz videoları seçin:", 12, TEXT2))
 
-        # Toolbar
         tb = QHBoxLayout()
         for txt, fn in [("Tümünü Seç", self._select_all), ("Hiçbirini Seçme", self._select_none)]:
             b = make_accent_btn(txt, BLUE)
@@ -772,7 +781,6 @@ class PlaylistDialog(QDialog):
             tb.addWidget(b)
         tb.addStretch()
 
-        # Filter
         self._filter = QLineEdit()
         self._filter.setPlaceholderText("Filtrele…")
         self._filter.setFixedWidth(180)
@@ -805,9 +813,9 @@ class PlaylistDialog(QDialog):
     def _populate(self, entries):
         self.list_widget.clear()
         for i, e in enumerate(entries, 1):
-            t   = e.get('title') or e.get('url') or f"Video {i}"
-            dur = e.get('duration')
-            ds  = f"  [{int(dur//60)}:{int(dur%60):02d}]" if dur else ""
+            t    = e.get('title') or e.get('url') or f"Video {i}"
+            dur  = e.get('duration')
+            ds   = f"  [{int(dur//60)}:{int(dur%60):02d}]" if dur else ""
             item = QListWidgetItem(f"{i:>3}. {t}{ds}")
             item.setCheckState(Qt.CheckState.Checked)
             item.setData(Qt.ItemDataRole.UserRole, i)
@@ -859,7 +867,10 @@ class CookieDialog(QDialog):
         root.setSpacing(14)
 
         root.addWidget(label("🍪 Çerez Ayarları", 17, TEXT, bold=True))
-        root.addWidget(label("Kimlik doğrulaması gerektiren içerikler için çerez kullanabilirsiniz.", 12, TEXT3, wrap=True))
+        root.addWidget(label(
+            "Kimlik doğrulaması gerektiren içerikler için çerez kullanabilirsiniz.",
+            12, TEXT3, wrap=True
+        ))
         root.addWidget(hdivider())
 
         self.rb_none    = QRadioButton("Çerez kullanma")
@@ -869,7 +880,10 @@ class CookieDialog(QDialog):
         root.addWidget(hdivider())
 
         root.addWidget(self.rb_browser)
-        warn = label("⚠  Chromium tabanlı tarayıcılar çalışırken çerezleri kilitler — kullanmadan önce kapatın.", 11, YELLOW, wrap=True)
+        warn = label(
+            "⚠  Chromium tabanlı tarayıcılar çalışırken çerezleri kilitler — kullanmadan önce kapatın.",
+            11, YELLOW, wrap=True
+        )
         warn.setContentsMargins(26, 0, 0, 0)
         root.addWidget(warn)
 
@@ -888,7 +902,10 @@ class CookieDialog(QDialog):
         root.addWidget(hdivider())
 
         root.addWidget(self.rb_file)
-        hint = label("'Get cookies.txt LOCALLY' eklentisiyle dışa aktarın. Tarayıcı açıkken de çalışır.", 11, TEXT3, wrap=True)
+        hint = label(
+            "'Get cookies.txt LOCALLY' eklentisiyle dışa aktarın. Tarayıcı açıkken de çalışır.",
+            11, TEXT3, wrap=True
+        )
         hint.setContentsMargins(26, 0, 0, 0)
         root.addWidget(hint)
 
@@ -906,10 +923,9 @@ class CookieDialog(QDialog):
         fl_row.addWidget(browse_btn)
         root.addLayout(fl_row)
 
-        # set initial
-        if current_browser:    self.rb_browser.setChecked(True)
-        elif current_file:     self.rb_file.setChecked(True)
-        else:                  self.rb_none.setChecked(True)
+        if current_browser:   self.rb_browser.setChecked(True)
+        elif current_file:    self.rb_file.setChecked(True)
+        else:                 self.rb_none.setChecked(True)
 
         for rb in (self.rb_none, self.rb_browser, self.rb_file):
             rb.toggled.connect(self._sync)
@@ -930,7 +946,9 @@ class CookieDialog(QDialog):
         self.file_entry.setEnabled(self.rb_file.isChecked())
 
     def _browse(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Çerez Dosyası Seç", "", "Cookie files (*.txt);;All (*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Çerez Dosyası Seç", "", "Cookie files (*.txt);;All (*)"
+        )
         if path:
             self.file_entry.setText(path)
             self.rb_file.setChecked(True)
@@ -938,23 +956,17 @@ class CookieDialog(QDialog):
     def _apply(self):
         if self.rb_browser.isChecked():
             chosen = SUPPORTED_BROWSERS[self.browser_combo.currentIndex()]
-            # Warn if the browser profile directory cannot be found on this system
-            paths = BROWSER_PROFILE_PATHS.get(chosen, [])
+            paths  = BROWSER_PROFILE_PATHS.get(chosen, [])
             profile_found = any(os.path.isdir(p) for p in paths)
-            if not profile_found:
-                self.browser_combo.setStyleSheet(f"border-color:{YELLOW};")
-                # Show an inline warning but still allow the user to proceed
-                # (the profile might be in a non-standard location)
+            if not profile_found and not hasattr(self, '_warn_added'):
                 self._browser_warning = label(
                     f"⚠ {chosen.capitalize()} profili bu sistemde bulunamadı.",
                     11, YELLOW, wrap=True
                 )
-                # Only add the warning once
                 lay = self.layout()
-                if lay and not hasattr(self, '_warn_added'):
+                if lay:
                     lay.insertWidget(lay.count() - 1, self._browser_warning)
                     self._warn_added = True
-                # Do not block — let the user proceed anyway
             self._browser = chosen
             self._file    = None
         elif self.rb_file.isChecked():
@@ -1027,7 +1039,9 @@ class CookieLockedDialog(QDialog):
         fl.addWidget(self.file_entry, stretch=1)
         br = QPushButton("Gözat"); br.setFixedSize(80, 36); br.clicked.connect(self._browse)
         fl.addWidget(br)
-        use = make_accent_btn("Bu dosyayı kullan", GREEN); use.setFixedSize(120, 36); use.clicked.connect(self._use_file)
+        use = make_accent_btn("Bu dosyayı kullan", GREEN)
+        use.setFixedSize(120, 36)
+        use.clicked.connect(self._use_file)
         fl.addWidget(use)
         root.addLayout(fl)
         root.addWidget(hdivider())
@@ -1046,12 +1060,16 @@ class CookieLockedDialog(QDialog):
             self.file_entry.setText(p)
             self._file_path = p
 
-    def _retry(self):   self._choice = "retry"; self.accept()
+    def _retry(self):    self._choice = "retry"; self.accept()
+
     def _use_file(self):
         p = self.file_entry.text().strip()
         if not p or not os.path.isfile(p):
-            self.file_entry.setStyleSheet(f"border-color:{RED};"); return
-        self._file_path = p; self._choice = "file"; self.accept()
+            self.file_entry.setStyleSheet(f"border-color:{RED};")
+            return
+        self._file_path = p
+        self._choice    = "file"
+        self.accept()
 
     def choice(self):    return self._choice
     def file_path(self): return self._file_path
@@ -1072,6 +1090,9 @@ class SettingsDialog(QDialog):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
+        from PyQt6.QtWidgets import QSlider
+        self._QSlider = QSlider
+
         tabs = QTabWidget()
         tabs.setStyleSheet(build_stylesheet())
         root.addWidget(tabs, stretch=1)
@@ -1091,8 +1112,6 @@ class SettingsDialog(QDialog):
         btn_row.addWidget(ok)
         root.addLayout(btn_row)
 
-    # ── Tabs ──────────────────────────────────────────────
-
     def _tab_general(self) -> QWidget:
         w   = QWidget(); w.setObjectName("dialog")
         lay = QVBoxLayout(w)
@@ -1111,9 +1130,9 @@ class SettingsDialog(QDialog):
 
         grid = QHBoxLayout(); grid.setSpacing(12)
         for lbl_txt, attr, items, key in [
-            ("Varsayılan Kalite",  "quality_combo", VIDEO_QUALITIES,            "default_quality"),
-            ("Varsayılan Format",  "format_combo",  VIDEO_FORMATS+AUDIO_FORMATS,"default_format"),
-            ("Ses Kalitesi (kbps)","aq_combo",      AUDIO_QUALITIES,            "default_audio_quality"),
+            ("Varsayılan Kalite",   "quality_combo", VIDEO_QUALITIES,             "default_quality"),
+            ("Varsayılan Format",   "format_combo",  VIDEO_FORMATS + AUDIO_FORMATS,"default_format"),
+            ("Ses Kalitesi (kbps)", "aq_combo",      AUDIO_QUALITIES,             "default_audio_quality"),
         ]:
             col = QVBoxLayout()
             col.addWidget(label(lbl_txt, 12, TEXT2))
@@ -1128,7 +1147,11 @@ class SettingsDialog(QDialog):
         self.subs_check  = QCheckBox("Altyazıları göm (EN & TR)")
         self.thumb_check = QCheckBox("Küçük resmi göm")
         self.desc_check  = QCheckBox("Açıklamayı kaydet (.description)")
-        for cb, key in [(self.subs_check,"embed_subtitles"), (self.thumb_check,"embed_thumbnail"), (self.desc_check,"write_description")]:
+        for cb, key in [
+            (self.subs_check,  "embed_subtitles"),
+            (self.thumb_check, "embed_thumbnail"),
+            (self.desc_check,  "write_description"),
+        ]:
             cb.setChecked(self._s.get(key, False))
             lay.addWidget(cb)
 
@@ -1136,6 +1159,7 @@ class SettingsDialog(QDialog):
         return w
 
     def _tab_advanced(self) -> QWidget:
+        from PyQt6.QtWidgets import QSlider
         w   = QWidget(); w.setObjectName("dialog")
         lay = QVBoxLayout(w)
         lay.setContentsMargins(24, 20, 24, 20)
@@ -1152,7 +1176,9 @@ class SettingsDialog(QDialog):
         frag_row.addWidget(self.frag_slider, stretch=1)
         frag_row.addWidget(self.frag_val)
         lay.addLayout(frag_row)
-        lay.addWidget(label("Daha yüksek değer = hızlı ama daha fazla CPU kullanımı", 11, TEXT3))
+        lay.addWidget(label(
+            "Daha yüksek değer = hızlı ama daha fazla CPU kullanımı", 11, TEXT3
+        ))
         lay.addWidget(hdivider())
 
         lay.addWidget(label("Geçmiş Limiti", 12, TEXT2))
@@ -1161,7 +1187,10 @@ class SettingsDialog(QDialog):
         self.hist_limit.setRange(10, 500)
         self.hist_limit.setValue(self._s.get("max_history", 50))
         self.hist_limit.setFixedWidth(80)
-        self.hist_limit.setStyleSheet(f"background:{INPUT_BG}; border:1.5px solid {BORDER}; border-radius:8px; padding:6px; color:{TEXT};")
+        self.hist_limit.setStyleSheet(
+            f"background:{INPUT_BG}; border:1.5px solid {BORDER}; "
+            f"border-radius:8px; padding:6px; color:{TEXT};"
+        )
         hist_row.addWidget(self.hist_limit)
         hist_row.addStretch()
         lay.addLayout(hist_row)
@@ -1184,7 +1213,10 @@ class SettingsDialog(QDialog):
         lay.setSpacing(14)
 
         lay.addWidget(label("yt-dlp Güncellemesi", 14, TEXT, bold=True))
-        lay.addWidget(label("yt-dlp'yi en son sürüme güncelleyin. Yeni site desteği ve hata düzeltmeleri için önerilir.", 12, TEXT3, wrap=True))
+        lay.addWidget(label(
+            "yt-dlp'yi en son sürüme güncelleyin. Yeni site desteği ve hata düzeltmeleri için önerilir.",
+            12, TEXT3, wrap=True
+        ))
         lay.addWidget(hdivider())
 
         self.upd_lbl = label("", 12, TEXT3)
@@ -1205,8 +1237,6 @@ class SettingsDialog(QDialog):
 
         lay.addStretch()
         return w
-
-    # ── Actions ───────────────────────────────────────────
 
     def _browse(self):
         folder = QFileDialog.getExistingDirectory(self, "Klasör Seç", self._s["download_path"])
@@ -1252,9 +1282,6 @@ class SettingsDialog(QDialog):
 
         def run():
             try:
-                # Frozen (PyInstaller .exe) ortamında yt-dlp güncellenemez:
-                # sys.executable Python değil exe'nin kendisidir ve yt-dlp
-                # zaten exe içine gömülüdür; sisteme pip kurulumu exe'yi etkilemez.
                 if getattr(sys, 'frozen', False):
                     _set("Paketlenmiş sürümde güncelleme desteklenmiyor", YELLOW)
                     _log("Bu uygulama .exe olarak paketlenmiş.")
@@ -1267,7 +1294,6 @@ class SettingsDialog(QDialog):
                 if pip:
                     cmd = [pip, "install", "--upgrade", "yt-dlp"]
                 else:
-                    # sys.executable burada gerçek Python yorumlayıcısıdır (frozen değil)
                     cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"]
                 _log(f"$ {' '.join(cmd)}")
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -1329,16 +1355,16 @@ class QueueItem:
         self.embed_thumbnail   = embed_thumbnail
         self.write_description = write_description
         self.title             = title or url
-        self.status            = "queued"   # queued | downloading | done | error
+        self.status            = "queued"
 
 
 # ═══════════════════════════════════════════════════════════
-#  DOWNLOAD PAGE  (left panel)
+#  DOWNLOAD PAGE
 # ═══════════════════════════════════════════════════════════
 class DownloadPage(QWidget):
-    request_download = pyqtSignal(object)   # emits QueueItem
-    request_queue    = pyqtSignal(object)   # emits QueueItem
-    request_info     = pyqtSignal(str)      # emits url
+    request_download = pyqtSignal(object)
+    request_queue    = pyqtSignal(object)
+    request_info     = pyqtSignal(str)
 
     def __init__(self, settings: dict, parent=None):
         super().__init__(parent)
@@ -1377,8 +1403,6 @@ class DownloadPage(QWidget):
         scroll.setWidget(inner)
         lay.addWidget(scroll)
 
-    # ── URL Card ──────────────────────────────────────────
-
     def _build_url_card(self):
         c_lay = QVBoxLayout()
         c     = card(c_lay)
@@ -1414,8 +1438,6 @@ class DownloadPage(QWidget):
 
         self._lay.addWidget(c)
 
-    # ── Preview Card ──────────────────────────────────────
-
     def _build_preview_card(self):
         c_lay = QHBoxLayout()
         c_lay.setContentsMargins(16, 14, 16, 14)
@@ -1426,16 +1448,18 @@ class DownloadPage(QWidget):
         self.thumb_label = QLabel()
         self.thumb_label.setFixedSize(180, 101)
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.thumb_label.setStyleSheet(f"background:{BG0}; border-radius:8px; color:{TEXT3}; font-size:11px;")
+        self.thumb_label.setStyleSheet(
+            f"background:{BG0}; border-radius:8px; color:{TEXT3}; font-size:11px;"
+        )
         self.thumb_label.setText("Önizleme")
         c_lay.addWidget(self.thumb_label)
 
         info_col = QVBoxLayout(); info_col.setSpacing(6)
         self.info_title = label("URL girin ve 'Bilgi Al'a tıklayın", 13, TEXT3, wrap=True)
         info_col.addWidget(self.info_title)
-        self.info_meta  = label("", 11, TEXT3)
+        self.info_meta = label("", 11, TEXT3)
         info_col.addWidget(self.info_meta)
-        self.info_tags  = label("", 11, MAUVE)
+        self.info_tags = label("", 11, MAUVE)
         info_col.addWidget(self.info_tags)
         info_col.addStretch()
 
@@ -1447,8 +1471,6 @@ class DownloadPage(QWidget):
         c_lay.addLayout(info_col, stretch=1)
 
         self._lay.addWidget(c)
-
-    # ── Options Card ──────────────────────────────────────
 
     def _build_options_card(self):
         c_lay = QVBoxLayout()
@@ -1473,10 +1495,11 @@ class DownloadPage(QWidget):
         fcol.addWidget(label("Format", 11, TEXT3))
         self.format_combo = QComboBox()
         self.format_combo.addItems(VIDEO_FORMATS)
+        self.format_combo.currentTextChanged.connect(self._on_format_changed)
         fcol.addWidget(self.format_combo)
         row1.addLayout(fcol)
 
-        # Audio Quality (hidden initially)
+        # Audio Quality
         acol = QVBoxLayout(); acol.setSpacing(4)
         acol.addWidget(label("Ses Kalitesi", 11, TEXT3))
         self.aq_combo = QComboBox()
@@ -1484,15 +1507,19 @@ class DownloadPage(QWidget):
         self.aq_combo.setCurrentText(self._settings.get("default_audio_quality", "192"))
         acol.addWidget(self.aq_combo)
         self._aq_widget = QWidget(); self._aq_widget.setLayout(acol)
-        sp = self._aq_widget.sizePolicy(); sp.setRetainSizeWhenHidden(False)
-        self._aq_widget.setSizePolicy(sp); self._aq_widget.hide()
+        sp = self._aq_widget.sizePolicy()
+        sp.setRetainSizeWhenHidden(False)
+        self._aq_widget.setSizePolicy(sp)
+        self._aq_widget.hide()
         row1.addWidget(self._aq_widget)
 
         # Save path
         pcol = QVBoxLayout(); pcol.setSpacing(4)
         pcol.addWidget(label("Kayıt Klasörü", 11, TEXT3))
         prow = QHBoxLayout(); prow.setSpacing(6)
-        self.path_entry = QLineEdit(self._settings.get("download_path", os.path.expanduser("~/Downloads")))
+        self.path_entry = QLineEdit(
+            self._settings.get("download_path", os.path.expanduser("~/Downloads"))
+        )
         self.path_entry.setReadOnly(True)
         self.path_entry.setFixedHeight(36)
         prow.addWidget(self.path_entry, stretch=1)
@@ -1504,7 +1531,7 @@ class DownloadPage(QWidget):
         c_lay.addLayout(row1)
         c_lay.addWidget(hdivider())
 
-        # Checkboxes row
+        # Checkboxes
         row2 = QHBoxLayout(); row2.setSpacing(20)
         self.subs_check  = QCheckBox("Altyazı göm")
         self.thumb_check = QCheckBox("Küçük resim göm")
@@ -1521,8 +1548,6 @@ class DownloadPage(QWidget):
 
         self._lay.addWidget(c)
         self._on_quality_changed(self.quality_combo.currentText())
-
-    # ── Download Button ───────────────────────────────────
 
     def _build_dl_button(self):
         btn_row = QHBoxLayout(); btn_row.setSpacing(10)
@@ -1552,8 +1577,6 @@ class DownloadPage(QWidget):
 
         self._lay.addLayout(btn_row)
 
-    # ── Progress Card ─────────────────────────────────────
-
     def _build_progress_card(self):
         c_lay = QVBoxLayout()
         c     = card(c_lay)
@@ -1574,8 +1597,8 @@ class DownloadPage(QWidget):
         self.progress_bar.setTextVisible(False)
         c_lay.addWidget(self.progress_bar)
 
-        self.pp_bar = QProgressBar()    # postprocess (merge) bar
-        self.pp_bar.setRange(0, 0)      # indeterminate
+        self.pp_bar = QProgressBar()
+        self.pp_bar.setRange(0, 0)
         self.pp_bar.setFixedHeight(4)
         self.pp_bar.setTextVisible(False)
         self.pp_bar.hide()
@@ -1586,11 +1609,15 @@ class DownloadPage(QWidget):
 
         stats_row = QHBoxLayout()
         self.stats_lbl = label("Hız: —  ·  ETA: —", 11, TEXT3)
-        self.stats_lbl.setStyleSheet(f"color:{TEXT3}; font-size:11px; font-family:'Consolas',monospace;")
+        self.stats_lbl.setStyleSheet(
+            f"color:{TEXT3}; font-size:11px; font-family:'Consolas',monospace;"
+        )
         stats_row.addWidget(self.stats_lbl)
         stats_row.addStretch()
         self.size_lbl = label("", 11, TEXT3)
-        self.size_lbl.setStyleSheet(f"color:{TEXT3}; font-size:11px; font-family:'Consolas',monospace;")
+        self.size_lbl.setStyleSheet(
+            f"color:{TEXT3}; font-size:11px; font-family:'Consolas',monospace;"
+        )
         stats_row.addWidget(self.size_lbl)
         c_lay.addLayout(stats_row)
 
@@ -1627,20 +1654,29 @@ class DownloadPage(QWidget):
         else:
             self.format_combo.setCurrentText(df if df in VIDEO_FORMATS else "mp4")
         self.format_combo.blockSignals(False)
+        # Thumbnail visibility güncelle
+        self._on_format_changed(self.format_combo.currentText())
+
+    def _on_format_changed(self, fmt: str):
+        """webm seçiliyken 'Küçük resim göm' seçeneğini gizle."""
+        can_embed = fmt in THUMBNAIL_EMBED_SUPPORTED
+        self.thumb_check.setVisible(can_embed)
+        if not can_embed:
+            self.thumb_check.setChecked(False)
 
     def _make_item(self) -> QueueItem | None:
         url = self.url_entry.text().strip()
         if not url:
             return None
         return QueueItem(
-            url            = url,
-            quality        = self.quality_combo.currentText(),
-            fmt            = self.format_combo.currentText(),
-            output_dir     = self.path_entry.text(),
-            subtitles      = self.subs_check.isChecked(),
-            audio_quality  = self.aq_combo.currentText(),
-            embed_thumbnail= self.thumb_check.isChecked(),
-            write_description=self.desc_check.isChecked(),
+            url              = url,
+            quality          = self.quality_combo.currentText(),
+            fmt              = self.format_combo.currentText(),
+            output_dir       = self.path_entry.text(),
+            subtitles        = self.subs_check.isChecked(),
+            audio_quality    = self.aq_combo.currentText(),
+            embed_thumbnail  = self.thumb_check.isChecked(),
+            write_description= self.desc_check.isChecked(),
         )
 
     def _emit_download(self):
@@ -1668,21 +1704,20 @@ class DownloadPage(QWidget):
         pct = max(0.0, min(100.0, pct))
         self.progress_bar.setValue(int(pct * 10))
         self.pct_lbl.setText(f"{int(pct)}%")
-        sp  = f"Hız: {speed or '—'}  ·  ETA: {eta or '—'}"
+        sp = f"Hız: {speed or '—'}  ·  ETA: {eta or '—'}"
         if fi and fc:
             sp += f"  ·  Parça: {fi}/{fc}"
         self.stats_lbl.setText(sp)
         if total > 0:
-            dl_mb  = dl   / (1024*1024)
-            tot_mb = total/ (1024*1024)
+            dl_mb  = dl    / (1024 * 1024)
+            tot_mb = total / (1024 * 1024)
             self.size_lbl.setText(f"{dl_mb:.1f} / {tot_mb:.1f} MB")
-        # speed graph
         try:
             spd = speed.replace(" ", "")
             if "MiB/s" in spd or "MB/s" in spd:
-                val = float(spd.replace("MiB/s","").replace("MB/s","")) * 1024
+                val = float(spd.replace("MiB/s", "").replace("MB/s", "")) * 1024
             elif "KiB/s" in spd or "KB/s" in spd:
-                val = float(spd.replace("KiB/s","").replace("KB/s",""))
+                val = float(spd.replace("KiB/s", "").replace("KB/s", ""))
             else:
                 val = 0.0
             self.speed_graph.add_sample(val)
@@ -1740,9 +1775,8 @@ class DownloadPage(QWidget):
 #  QUEUE PAGE
 # ═══════════════════════════════════════════════════════════
 class QueuePage(QWidget):
-    request_start  = pyqtSignal()
-    request_clear  = pyqtSignal()
-    request_remove = pyqtSignal(int)   # Fix 9: index ile remove sinyali
+    request_start = pyqtSignal()
+    request_clear = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1782,12 +1816,14 @@ class QueuePage(QWidget):
         btn_row.addStretch()
         lay.addLayout(btn_row)
 
-    def refresh(self, queue: list[QueueItem]):
-        self._queue = queue
+    def refresh(self, queue: list):
+        self._queue = list(queue)  # MainWindow._queue ile senkron kopya
         self.list_widget.clear()
         self.count_lbl.setText(f"{len(queue)} öğe")
         if not queue:
-            ph = QListWidgetItem("Kuyruk boş  —  İndir sayfasında '+ Kuyruğa Ekle'ye tıklayın")
+            ph = QListWidgetItem(
+                "Kuyruk boş  —  İndir sayfasında '+ Kuyruğa Ekle'ye tıklayın"
+            )
             ph.setForeground(QColor(TEXT3))
             ph.setFlags(Qt.ItemFlag.NoItemFlags)
             self.list_widget.addItem(ph)
@@ -1804,25 +1840,30 @@ class QueuePage(QWidget):
         idx = self.list_widget.currentRow()
         if idx < 0 or idx >= len(self._queue):
             return
-        menu = QMenu(self)
+        menu   = QMenu(self)
         remove = menu.addAction("🗑  Kuyruktan kaldır")
         act    = menu.exec(self.list_widget.mapToGlobal(pos))
         if act == remove:
-            self.request_remove.emit(idx)   # Fix 9: MainWindow._queue'yu güncelle
+            # Silme sinyali emit etmek yerine parent'a bildir
+            self.remove_requested.emit(idx)
+
+    # Senkronizasyon için sinyal
+    remove_requested = pyqtSignal(int)
 
 
 # ═══════════════════════════════════════════════════════════
 #  HISTORY PAGE
 # ═══════════════════════════════════════════════════════════
 class HistoryPage(QWidget):
-    def __init__(self, max_history: int = 50, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        raw = load_history()
-        # Fix 13: yüklenirken de max_history limitini uygula
-        self._history: list[dict] = raw[:max_history]
-        if len(raw) > max_history:
-            save_history(self._history)   # kırpılmış listeyi geri yaz
+        self._history: list[dict] = load_history()
         self._build()
+        # Başlangıçta yüklenen geçmişi max_history ile kırp (varsayılan 50)
+        if len(self._history) > DEFAULT_SETTINGS["max_history"]:
+            self._history = self._history[:DEFAULT_SETTINGS["max_history"]]
+            save_history(self._history)
+        self._refresh_list(self._history)
 
     def _build(self):
         lay = QVBoxLayout(self)
@@ -1849,8 +1890,6 @@ class HistoryPage(QWidget):
         self.list_widget.customContextMenuRequested.connect(self._ctx)
         lay.addWidget(self.list_widget, stretch=1)
 
-        self._refresh_list(self._history)
-
     def add_entry(self, entry: dict, max_items: int = 50):
         self._history.insert(0, entry)
         if len(self._history) > max_items:
@@ -1858,7 +1897,7 @@ class HistoryPage(QWidget):
         save_history(self._history)
         self._refresh_list(self._history)
 
-    def _refresh_list(self, entries: list[dict]):
+    def _refresh_list(self, entries: list):
         self.list_widget.clear()
         if not entries:
             ph = QListWidgetItem("Henüz indirme yapılmadı")
@@ -1929,7 +1968,8 @@ class LogsPage(QWidget):
         hdr = QHBoxLayout()
         hdr.addWidget(label("📄 Uygulama Günlükleri", 16, TEXT, bold=True))
         hdr.addStretch()
-        clear = QPushButton("Temizle"); clear.setObjectName("ghostBtn")
+        clear = QPushButton("Temizle")
+        clear.setObjectName("ghostBtn")
         clear.clicked.connect(self._clear)
         hdr.addWidget(clear)
         lay.addLayout(hdr)
@@ -1940,8 +1980,11 @@ class LogsPage(QWidget):
         lay.addWidget(self.log_box, stretch=1)
 
     def append(self, text: str, color: str = TEXT2):
-        ts  = datetime.datetime.now().strftime("%H:%M:%S")
-        self.log_box.append(f'<span style="color:{TEXT3};">[{ts}]</span> <span style="color:{color};">{text}</span>')
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        self.log_box.append(
+            f'<span style="color:{TEXT3};">[{ts}]</span> '
+            f'<span style="color:{color};">{text}</span>'
+        )
 
     def _clear(self):
         self.log_box.clear()
@@ -1960,7 +2003,6 @@ class MainWindow(QMainWindow):
         self.settings = load_settings()
         self.setStyleSheet(build_stylesheet(self.settings.get("theme_accent", BLUE)))
 
-        # icon
         icon_path = os.path.join(
             getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__))),
             'icon.ico'
@@ -1968,14 +2010,11 @@ class MainWindow(QMainWindow):
         if os.path.isfile(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 
-        # state
-        self._is_downloading   = False
+        self._is_downloading = False
         self._queue: list[QueueItem] = []
-        self._queue_running    = False
+        self._queue_running  = False
         self._pending: QueueItem | None = None
-        self._pending_url_for_cookie = ""
 
-        # bridge + downloader
         self.bridge = Bridge()
         self.bridge.progress.connect(self._on_progress)
         self.bridge.complete.connect(self._on_complete)
@@ -1986,7 +2025,7 @@ class MainWindow(QMainWindow):
         self.bridge.postprocess.connect(self._on_postprocess)
 
         self.downloader = Downloader(
-            on_progress   = lambda p,s,e,d,t,fi,fc: self.bridge.progress.emit(p,s,e,d,t,fi,fc),
+            on_progress   = lambda p, s, e, d, t, fi, fc: self.bridge.progress.emit(p, s, e, d, t, fi, fc),
             on_complete   = lambda i: self.bridge.complete.emit(i),
             on_error      = lambda m: self.bridge.error.emit(m),
             on_postprocess= lambda: self.bridge.postprocess.emit(),
@@ -1994,15 +2033,13 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
 
-    # ═══════════════════════════════════════════════════════
-    #  UI BUILD
-    # ═══════════════════════════════════════════════════════
-
     def closeEvent(self, event):
-        """Ensure any active download is cancelled before the window closes."""
         if self._is_downloading:
             self.downloader.cancel()
         event.accept()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
 
     def _build_ui(self):
         root = QWidget(); root.setObjectName("root")
@@ -2011,26 +2048,26 @@ class MainWindow(QMainWindow):
         main.setContentsMargins(0, 0, 0, 0)
         main.setSpacing(0)
 
-        # ── Sidebar ───────────────────────────────────────
         sidebar = QWidget(); sidebar.setObjectName("sidebar")
         sidebar.setFixedWidth(200)
         sb_lay  = QVBoxLayout(sidebar)
         sb_lay.setContentsMargins(12, 20, 12, 20)
         sb_lay.setSpacing(4)
 
-        # App title
         title_lbl = QLabel("RPM's Media Tool")
-        title_lbl.setStyleSheet(f"color:{BLUE}; font-size:18px; font-weight:800; padding:0 8px 16px 8px;")
+        title_lbl.setStyleSheet(
+            f"color:{BLUE}; font-size:18px; font-weight:800; padding:0 8px 16px 8px;"
+        )
         sb_lay.addWidget(title_lbl)
 
         self._pages = QStackedWidget()
         self._sidebar_btns: list[SidebarButton] = []
 
         nav_items = [
-            ("⬇", "İndir",    self._make_download_page()),
-            ("⏳", "Kuyruk",   self._make_queue_page()),
-            ("📋", "Geçmiş",   self._make_history_page()),
-            ("📄", "Günlükler",self._make_logs_page()),
+            ("⬇", "İndir",     self._make_download_page()),
+            ("⏳", "Kuyruk",    self._make_queue_page()),
+            ("📋", "Geçmiş",    self._make_history_page()),
+            ("📄", "Günlükler", self._make_logs_page()),
         ]
         for icon, name, page in nav_items:
             btn = SidebarButton(icon, name)
@@ -2043,7 +2080,6 @@ class MainWindow(QMainWindow):
         sb_lay.addWidget(hdivider())
         sb_lay.addSpacing(6)
 
-        # Cookie button
         self.cookie_btn = QPushButton("🍪 Çerezler")
         self.cookie_btn.setObjectName("ghostBtn")
         self.cookie_btn.setFixedHeight(36)
@@ -2051,20 +2087,20 @@ class MainWindow(QMainWindow):
         sb_lay.addWidget(self.cookie_btn)
 
         self.cookie_status = QLabel("Çerez: Yok")
-        self.cookie_status.setStyleSheet(f"color:{TEXT3}; font-size:10px; padding:2px 4px;")
+        self.cookie_status.setStyleSheet(
+            f"color:{TEXT3}; font-size:10px; padding:2px 4px;"
+        )
         self.cookie_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sb_lay.addWidget(self.cookie_status)
-
         sb_lay.addSpacing(6)
 
-        # Settings button
         settings_btn = QPushButton("⚙ Ayarlar")
         settings_btn.setObjectName("ghostBtn")
         settings_btn.setFixedHeight(36)
         settings_btn.clicked.connect(self._open_settings)
         sb_lay.addWidget(settings_btn)
 
-        ver = QLabel("v2.0  ·  yt-dlp")
+        ver = QLabel("V2.3")
         ver.setStyleSheet(f"color:{TEXT3}; font-size:10px; padding:4px;")
         ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
         sb_lay.addWidget(ver)
@@ -2087,11 +2123,11 @@ class MainWindow(QMainWindow):
         self.q_page = QueuePage()
         self.q_page.request_start.connect(self._start_queue)
         self.q_page.request_clear.connect(self._clear_queue)
-        self.q_page.request_remove.connect(self._remove_from_queue)   # Fix 9
+        self.q_page.remove_requested.connect(self._remove_from_queue)
         return self.q_page
 
     def _make_history_page(self) -> HistoryPage:
-        self.hist_page = HistoryPage(max_history=self.settings.get("max_history", 50))
+        self.hist_page = HistoryPage()
         return self.hist_page
 
     def _make_logs_page(self) -> LogsPage:
@@ -2120,9 +2156,9 @@ class MainWindow(QMainWindow):
             except RuntimeError as e:
                 if "COOKIE_DB_LOCKED" in str(e):
                     self.bridge.error.emit("COOKIE_DB_LOCKED")
-                    self.bridge.complete.emit({"_type": "info_only", "info": None})
                     return
-                info = None
+                self.bridge.complete.emit({"_type": "info_only", "info": None})
+                return
             if not info:
                 self.bridge.complete.emit({"_type": "info_only", "info": None})
                 return
@@ -2137,7 +2173,7 @@ class MainWindow(QMainWindow):
         if self._is_downloading:
             self._toast("Zaten bir indirme devam ediyor", YELLOW)
             return
-        self._pending = item
+        self._pending        = item
         self._is_downloading = True
         self.dl_page.show_cancel()
         self.dl_page.reset_progress()
@@ -2145,12 +2181,12 @@ class MainWindow(QMainWindow):
         self.logs_page.append(f"İndirme başladı: {item.url}")
         self.downloader.start(
             item.url, item.quality, item.fmt, item.output_dir,
-            subtitles           = item.subtitles,
-            audio_quality       = item.audio_quality,
-            playlist_items      = item.playlist_items,
-            embed_thumbnail     = item.embed_thumbnail,
-            write_description   = item.write_description,
-            concurrent_fragments= self.settings.get("concurrent_fragments", 4),
+            subtitles            = item.subtitles,
+            audio_quality        = item.audio_quality,
+            playlist_items       = item.playlist_items,
+            embed_thumbnail      = item.embed_thumbnail,
+            write_description    = item.write_description,
+            concurrent_fragments = self.settings.get("concurrent_fragments", 4),
         )
 
     def _cancel(self):
@@ -2163,13 +2199,12 @@ class MainWindow(QMainWindow):
         def fetch():
             try:
                 info = self.downloader.get_info(item.url, flat_playlist=False)
-            except RuntimeError as e:
-                if "COOKIE_DB_LOCKED" in str(e):
-                    self.bridge.error.emit("COOKIE_DB_LOCKED")
-                    return
+            except RuntimeError:
                 info = None
-            title = (info.get("title") if info else None) or item.url
-            item.title = title
+            title = ""
+            if info:
+                title = info.get("title") or item.url
+            item.title = title or item.url
             self.bridge.info_fetched.emit(item)
 
         threading.Thread(target=fetch, daemon=True).start()
@@ -2197,7 +2232,7 @@ class MainWindow(QMainWindow):
         self.q_page.refresh(self._queue)
 
     def _remove_from_queue(self, idx: int):
-        """Fix 9: MainWindow._queue ve QueuePage._queue tutarlı kalsın."""
+        """QueuePage'den gelen silme isteğini MainWindow._queue üzerinde uygula."""
         if 0 <= idx < len(self._queue):
             self._queue.pop(idx)
             self.q_page.refresh(self._queue)
@@ -2236,16 +2271,18 @@ class MainWindow(QMainWindow):
                 return
             self.dl_page.show_info(data)
             self.dl_page.set_status("Bilgi yüklendi", GREEN)
-            # load thumbnail
             thumb_url = data.get('thumbnail')
             if thumb_url:
                 def load():
                     try:
                         resp = requests.get(thumb_url, timeout=6)
-                        img  = QImage(); img.loadFromData(resp.content)
+                        img  = QImage()
+                        img.loadFromData(resp.content)
                         px   = QPixmap.fromImage(img).scaled(
-                            180, 101, Qt.AspectRatioMode.KeepAspectRatio,
-                            Qt.TransformationMode.SmoothTransformation)
+                            180, 101,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation
+                        )
                         self.bridge.thumb.emit(px)
                     except Exception:
                         pass
@@ -2259,56 +2296,49 @@ class MainWindow(QMainWindow):
         self.dl_page.progress_bar.setValue(1000)
         self.dl_page.pct_lbl.setText("100%")
 
-        # History
         if isinstance(info, dict):
-            entries = info.get('entries')
+            # Playlist indirmesinde bireysel video bilgisi entries içinde olabilir
+            entries = info.get("entries")
             if entries:
-                # Playlist indirmesi — her video için ayrı geçmiş kaydı ekle
+                # Playlist: her entry'yi ayrı geçmiş kaydı olarak ekle
                 for entry in entries:
                     if not isinstance(entry, dict):
                         continue
-                    e_title   = entry.get('title', 'Bilinmiyor')
-                    e_ext     = entry.get('ext', '')
-                    e_size_mb = (entry.get('filesize') or entry.get('filesize_approx') or 0) / (1024*1024)
-                    e_url     = entry.get('webpage_url') or entry.get('url', '')
-                    e_ts      = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                    e_entry   = {
-                        "title":      e_title,
-                        "ext":        e_ext,
-                        "size_mb":    round(e_size_mb, 2),
-                        "url":        e_url,
-                        "timestamp":  e_ts,
+                    title   = entry.get('title', 'Bilinmiyor')
+                    ext     = entry.get('ext', '')
+                    size_mb = (entry.get('filesize') or entry.get('filesize_approx') or 0) / (1024 * 1024)
+                    url     = entry.get('webpage_url') or entry.get('url', '')
+                    ts      = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                    self.hist_page.add_entry({
+                        "title":      title,
+                        "ext":        ext,
+                        "size_mb":    round(size_mb, 2),
+                        "url":        url,
+                        "timestamp":  ts,
                         "output_dir": self._pending.output_dir if self._pending else "",
-                    }
-                    self.hist_page.add_entry(e_entry, self.settings.get("max_history", 50))
-                pl_title = info.get('title', 'Playlist')
-                self.logs_page.append(f"Tamamlandı (playlist): {pl_title} — {len(entries)} video", GREEN)
+                    }, self.settings.get("max_history", 50))
+                    self.logs_page.append(f"Tamamlandı: {title}", GREEN)
             else:
-                title    = info.get('title', 'Bilinmiyor')
-                ext      = info.get('ext', '')
-                size_mb  = (info.get('filesize') or info.get('filesize_approx') or 0) / (1024*1024)
-                url      = info.get('webpage_url') or info.get('url', '')
-                ts       = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-                entry    = {
+                title   = info.get('title', 'Bilinmiyor')
+                ext     = info.get('ext', '')
+                size_mb = (info.get('filesize') or info.get('filesize_approx') or 0) / (1024 * 1024)
+                url     = info.get('webpage_url') or info.get('url', '')
+                ts      = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+                self.hist_page.add_entry({
                     "title":      title,
                     "ext":        ext,
                     "size_mb":    round(size_mb, 2),
                     "url":        url,
                     "timestamp":  ts,
                     "output_dir": self._pending.output_dir if self._pending else "",
-                }
-                self.hist_page.add_entry(entry, self.settings.get("max_history", 50))
+                }, self.settings.get("max_history", 50))
                 self.logs_page.append(f"Tamamlandı: {title}", GREEN)
-
-            # Fix 5: webm + thumbnail uyarısı
-            if info.get('_webm_thumb_skipped'):
-                self._toast("webm formatında küçük resim gömme desteklenmiyor — atlandı", YELLOW)
-                self.logs_page.append("Uyarı: webm formatında küçük resim gömme desteklenmiyor", YELLOW)
 
         if self._queue_running:
             for q in self._queue:
                 if q.status == "downloading":
-                    q.status = "done"; break
+                    q.status = "done"
+                    break
             self.q_page.refresh(self._queue)
             self.dl_page.reset_progress()
             self.dl_page.reset_preview()
@@ -2326,7 +2356,8 @@ class MainWindow(QMainWindow):
         if self._queue_running:
             for q in self._queue:
                 if q.status == "downloading":
-                    q.status = "error"; break
+                    q.status = "error"
+                    break
             self.q_page.refresh(self._queue)
 
         if msg == "Cancelled":
@@ -2338,20 +2369,24 @@ class MainWindow(QMainWindow):
 
         if msg == "COOKIE_DB_LOCKED":
             browser = self.downloader.cookie_browser or "browser"
-            dlg = CookieLockedDialog(browser, parent=self)
+            dlg     = CookieLockedDialog(browser, parent=self)
             if dlg.exec():
                 choice = dlg.choice()
+                if self._pending is None:
+                    self.dl_page.set_status("Tekrar denenecek indirme bulunamadı", RED)
+                    self._queue_running = False
+                    return
                 if choice == "retry":
                     self.dl_page.set_status("Tekrar deneniyor…", BLUE)
                     self.dl_page.reset_progress()
+                    self._is_downloading = False
                     self._start_download(self._pending)
                 elif choice == "file":
                     self._apply_cookie(None, dlg.file_path())
                     self.dl_page.set_status("Çerez dosyasıyla tekrar deneniyor…", BLUE)
                     self.dl_page.reset_progress()
+                    self._is_downloading = False
                     self._start_download(self._pending)
-                else:
-                    self._queue_running = False
             else:
                 self._queue_running = False
             return
@@ -2377,12 +2412,26 @@ class MainWindow(QMainWindow):
             if not pl_str:
                 self.dl_page.set_status("Video seçilmedi", TEXT3)
                 return
+            n = len(dlg.selected_indices())
+            self.logs_page.append(f"Oynatma listesi: {n} video seçildi")
+
+            # Mevcut _pending varsa playlist_items güncelle,
+            # yoksa URL'den yeni bir QueueItem oluştur
+            url = self.dl_page.url_entry.text().strip()
             if self._pending:
                 self._pending.playlist_items = pl_str
+                item = self._pending
+            else:
+                item = self.dl_page._make_item()
+                if not item:
+                    self.dl_page.set_status("İndirme öğesi oluşturulamadı", RED)
+                    return
+                item.playlist_items = pl_str
+            
             self.dl_page.set_status(
-                f"Oynatma listesi hazır — {len(dlg.selected_indices())} video seçildi", GREEN
+                f"Oynatma listesi hazır — {n} video seçildi, indirme başlıyor…", GREEN
             )
-            self.logs_page.append(f"Oynatma listesi: {len(dlg.selected_indices())} video seçildi")
+            self._start_download(item)
         else:
             self.dl_page.set_status("Oynatma listesi seçimi iptal edildi", TEXT3)
 
@@ -2400,7 +2449,11 @@ class MainWindow(QMainWindow):
             self._toast("Ayarlar kaydedildi", GREEN)
 
     def _open_cookie_dialog(self):
-        dlg = CookieDialog(self.downloader.cookie_browser, self.downloader.cookie_file, parent=self)
+        dlg = CookieDialog(
+            self.downloader.cookie_browser,
+            self.downloader.cookie_file,
+            parent=self
+        )
         if dlg.exec():
             self._apply_cookie(dlg.result_browser(), dlg.result_file())
 
@@ -2408,16 +2461,22 @@ class MainWindow(QMainWindow):
         if browser:
             self.downloader.set_cookie_browser(browser)
             self.cookie_status.setText(f"🍪 {browser.capitalize()}")
-            self.cookie_status.setStyleSheet(f"color:{GREEN}; font-size:10px; padding:2px 4px;")
+            self.cookie_status.setStyleSheet(
+                f"color:{GREEN}; font-size:10px; padding:2px 4px;"
+            )
         elif file:
             self.downloader.set_cookie_file(file)
             self.cookie_status.setText(f"🍪 {os.path.basename(file)}")
-            self.cookie_status.setStyleSheet(f"color:{GREEN}; font-size:10px; padding:2px 4px;")
+            self.cookie_status.setStyleSheet(
+                f"color:{GREEN}; font-size:10px; padding:2px 4px;"
+            )
         else:
             self.downloader.cookie_browser = None
             self.downloader.cookie_file    = None
             self.cookie_status.setText("Çerez: Yok")
-            self.cookie_status.setStyleSheet(f"color:{TEXT3}; font-size:10px; padding:2px 4px;")
+            self.cookie_status.setStyleSheet(
+                f"color:{TEXT3}; font-size:10px; padding:2px 4px;"
+            )
 
     # ═══════════════════════════════════════════════════════
     #  TOAST
@@ -2425,37 +2484,7 @@ class MainWindow(QMainWindow):
 
     def _toast(self, text: str, color: str = GREEN):
         t = Toast(self, text, color)
-
-        def _reposition():
-            try:
-                win_geo = self.geometry()
-                tw = t.width()
-                th = t.height()
-                x  = win_geo.x() + win_geo.width()  - tw - 24
-                y  = win_geo.y() + win_geo.height() - th - 48
-                t.move(x, y)
-            except RuntimeError:
-                pass
-
-        _reposition()
         t.show()
-
-        # Fix 12: pencere yeniden boyutlandırılınca toast'ı yeniden konumlandır
-        _resize_conn = [None]
-
-        def _on_resize(event):
-            _reposition()
-
-        _orig_resize = self.resizeEvent
-
-        def _patched_resize(event):
-            _orig_resize(event)
-            _reposition()
-
-        # Sadece bu toast yaşarken resizeEvent'i wrap et
-        self.resizeEvent = _patched_resize
-        t.destroyed.connect(lambda: setattr(self, 'resizeEvent', _orig_resize))
-        
 
 
 # ═══════════════════════════════════════════════════════════

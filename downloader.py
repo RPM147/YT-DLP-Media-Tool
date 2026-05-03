@@ -56,15 +56,19 @@ VIDEO_QUALITIES = ["Best Quality", "2160p", "1440p", "1080p", "720p", "480p", "3
 
 SUPPORTED_BROWSERS = ["brave", "chrome", "firefox", "edge", "opera", "chromium", "vivaldi", "safari"]
 
+# Küçük resim gömmeyi destekleyen video formatları
+THUMBNAIL_EMBED_SUPPORTED = {"mp4", "mkv", "m4a", "mp3", "ogg", "opus", "flac"}
+
 
 class Downloader:
     def __init__(self, on_progress, on_complete, on_error, on_postprocess=None):
-        self.on_progress     = on_progress
-        self.on_complete     = on_complete
-        self.on_error        = on_error
-        self.on_postprocess  = on_postprocess or (lambda: None)
-        self._cancel_flag    = False
-        self._ydl            = None
+        self.on_progress            = on_progress
+        self.on_complete            = on_complete
+        self.on_error               = on_error
+        self.on_postprocess         = on_postprocess or (lambda: None)
+        self._cancel_flag           = False
+        self._ydl                   = None
+        self._ydl_lock              = threading.Lock()
         self.cookie_browser         = None
         self.cookie_browser_profile = None
         self.cookie_file            = None
@@ -96,6 +100,13 @@ class Downloader:
 
     def cancel(self):
         self._cancel_flag = True
+        with self._ydl_lock:
+            ydl = self._ydl
+        if ydl:
+            try:
+                ydl.params['abort_on_error'] = True
+            except Exception:
+                pass
 
     def get_info(self, url, flat_playlist=False):
         opts = {'quiet': True, 'no_warnings': True}
@@ -108,7 +119,7 @@ class Downloader:
         except DownloadError as e:
             err = str(e)
             if "Could not copy" in err and "cookie" in err.lower():
-                raise RuntimeError("COOKIE_DB_LOCKED") from e
+                raise RuntimeError("COOKIE_DB_LOCKED")
             return None
         except Exception:
             return None
@@ -152,8 +163,8 @@ class Downloader:
                 except Exception:
                     percent = 0.0
 
-            speed_str = d.get('_speed_str', '0 KB/s').strip()
-            eta_str   = d.get('_eta_str',   '00:00').strip()
+            speed_str  = d.get('_speed_str', '0 KB/s').strip()
+            eta_str    = d.get('_eta_str',   '00:00').strip()
             frag_index = d.get('fragment_index')
             frag_count = d.get('fragment_count')
             self.on_progress(percent, speed_str, eta_str, downloaded, total, frag_index, frag_count)
@@ -166,18 +177,16 @@ class Downloader:
 
     def _download(self, url, quality, fmt, output_dir,
                   subtitles, audio_quality, playlist_items,
-                  embed_thumbnail, write_description,
-                  concurrent_fragments=4):
+                  embed_thumbnail, write_description, concurrent_fragments):
         is_audio = (quality == "Audio Only")
 
-        # Video/ses kaynak formatlarını çıktı formatına göre belirle.
-        # mp4  → mp4 video + m4a ses (en uyumlu)
-        # webm → webm video + webm/opus ses (FFmpeg sorunsuz birleştirir)
-        # mkv  → herhangi video + herhangi ses (mkv hepsini kabul eder)
+        # Küçük resim gömme sadece desteklenen formatlarda aktif
+        can_embed_thumbnail = embed_thumbnail and (fmt in THUMBNAIL_EMBED_SUPPORTED)
+
+        # Video/ses kaynak formatlarını çıktı formatına göre belirle
         if not is_audio and fmt == "webm":
             _vext, _aext = "webm", "webm"
         elif not is_audio and fmt == "mkv":
-            # mkv için kaynak formatı kısıtlamıyoruz; en iyi kaliteyi al
             _vext, _aext = None, None
         else:
             _vext, _aext = "mp4", "m4a"
@@ -185,12 +194,10 @@ class Downloader:
         def _fmt(vext, aext, height=None):
             h = f"[height<={height}]" if height else ""
             if vext and aext:
-                # Belirli kaynak formatı iste, bulamazsa kısıtsız en iyi kombinasyonu al
                 return (f"bestvideo{h}[ext={vext}]+bestaudio[ext={aext}]"
                         f"/bestvideo{h}+bestaudio"
-                        + (f"/best{h}" if height else "/best"))
+                        + (f"/best[height<={height}]" if height else "/best"))
             else:
-                # mkv: kaynak format kısıtlaması yok
                 return f"bestvideo{h}+bestaudio/best{h}" if height else "bestvideo+bestaudio/best"
 
         format_map = {
@@ -206,11 +213,11 @@ class Downloader:
         fmt_str = format_map.get(quality, "best")
 
         ydl_opts = {
-            'format':          fmt_str,
-            'outtmpl':         os.path.join(output_dir, '%(title)s.%(ext)s'),
-            'progress_hooks':  [self._progress_hook],
-            'quiet':           True,
-            'no_warnings':     True,
+            'format':                        fmt_str,
+            'outtmpl':                       os.path.join(output_dir, '%(title)s.%(ext)s'),
+            'progress_hooks':                [self._progress_hook],
+            'quiet':                         True,
+            'no_warnings':                   True,
             'concurrent_fragment_downloads': concurrent_fragments,
         }
 
@@ -219,31 +226,23 @@ class Downloader:
 
         if is_audio:
             pq = "0" if audio_quality == "best" else audio_quality
-            # Validate audio codec — only pass recognised audio formats
             _VALID_AUDIO_CODECS = {"mp3", "aac", "flac", "wav", "opus", "m4a", "vorbis", "alac"}
             codec = fmt if fmt in _VALID_AUDIO_CODECS else "mp3"
             pp = [{'key': 'FFmpegExtractAudio', 'preferredcodec': codec, 'preferredquality': pq}]
-            if embed_thumbnail:
+            if can_embed_thumbnail:
                 pp.append({'key': 'EmbedThumbnail'})
             ydl_opts['postprocessors'] = pp
-            if embed_thumbnail:
-                ydl_opts['writethumbnail']       = True
-                ydl_opts['postprocessor_args']   = {'EmbedThumbnail': []}
+            if can_embed_thumbnail:
+                ydl_opts['writethumbnail']     = True
+                ydl_opts['postprocessor_args'] = {'EmbedThumbnail': []}
         else:
             ydl_opts['merge_output_format'] = fmt
-            if embed_thumbnail:
-                # webm thumbnail embedding desteklenmiyor — sessizce atla, kullanıcı uyarılacak
-                # (hata on_error ile "WEBM_THUMB_UNSUPPORTED" olarak iletilir)
-                if fmt == "webm":
-                    # webm desteklenmez; thumbnail gömmeden devam et
-                    pass
-                else:
-                    # mp4, mkv ve diğer desteklenen formatlar için EmbedThumbnail ekle
-                    ydl_opts['postprocessors'] = [
-                        {'key': 'FFmpegMetadata'},
-                        {'key': 'EmbedThumbnail', 'already_have_thumbnail': False},
-                    ]
-                    ydl_opts['writethumbnail'] = True
+            if can_embed_thumbnail:
+                ydl_opts['postprocessors'] = [
+                    {'key': 'FFmpegMetadata'},
+                    {'key': 'EmbedThumbnail', 'already_have_thumbnail': False},
+                ]
+                ydl_opts['writethumbnail'] = True
 
         if subtitles:
             ydl_opts.update({
@@ -256,22 +255,16 @@ class Downloader:
         if write_description:
             ydl_opts['writedescription'] = True
 
-        # webm+thumbnail kombinasyonunu işaretle — indirme sonrası uyarı gösterilecek
-        _webm_thumb_skipped = (not is_audio and fmt == "webm" and embed_thumbnail)
-
         self._apply_cookie_opts(ydl_opts)
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                self._ydl = ydl
+                with self._ydl_lock:
+                    self._ydl = ydl
                 info = ydl.extract_info(url, download=True)
-                # Fix 10: merge/postprocess aşamasında iptal isteğini kontrol et
                 if self._cancel_flag:
                     self.on_error("Cancelled")
                     return
-                if _webm_thumb_skipped and isinstance(info, dict):
-                    info = dict(info)
-                    info['_webm_thumb_skipped'] = True
                 self.on_complete(info)
         except DownloadError as e:
             err = str(e)
@@ -291,3 +284,6 @@ class Downloader:
                 self.on_error("COOKIE_DB_LOCKED")
             else:
                 self.on_error(err)
+        finally:
+            with self._ydl_lock:
+                self._ydl = None
