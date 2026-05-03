@@ -5,8 +5,14 @@ import threading
 import subprocess
 import weakref
 import datetime
+import ctypes
 
 import requests
+
+# Windows görev çubuğunda ikonun doğru görünmesini sağlar
+if os.name == 'nt':
+    myappid = 'rpms.mediatool.downloader.2.0'
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -96,9 +102,16 @@ def load_settings() -> dict:
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        for k, v in DEFAULT_SETTINGS.items():
-            data.setdefault(k, v)
-        return data
+        if not isinstance(data, dict):
+            raise ValueError("Settings file is not a JSON object")
+        result = DEFAULT_SETTINGS.copy()
+        for k, default_v in DEFAULT_SETTINGS.items():
+            raw = data.get(k, default_v)
+            # Enforce same type as default; fall back to default on mismatch
+            if not isinstance(raw, type(default_v)):
+                raw = default_v
+            result[k] = raw
+        return result
     except Exception:
         return DEFAULT_SETTINGS.copy()
 
@@ -522,44 +535,45 @@ class SpeedGraph(QWidget):
 
     def paintEvent(self, _):
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
+        try:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            w, h = self.width(), self.height()
 
-        # background
-        p.setBrush(QBrush(QColor(SURFACE0)))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(0, 0, w, h, 6, 6)
+            # background
+            p.setBrush(QBrush(QColor(SURFACE0)))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(0, 0, w, h, 6, 6)
 
-        if len(self._samples) < 2:
-            p.setPen(QPen(QColor(TEXT3)))
-            p.setFont(QFont("Segoe UI", 10))
-            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._empty_text)
+            if len(self._samples) < 2:
+                p.setPen(QPen(QColor(TEXT3)))
+                p.setFont(QFont("Segoe UI", 10))
+                p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._empty_text)
+                return
+
+            mx  = max(self._samples) or 1.0
+            n   = len(self._samples)
+            pts = []
+            for i, v in enumerate(self._samples):
+                x = w * i / (n - 1)
+                y = h - (v / mx) * (h - 6) - 3
+                pts.append(QPointF(x, y))
+
+            fill = [QPointF(0, h)] + pts + [QPointF(w, h)]
+            fc   = QColor(self._color)
+            fc.setAlpha(45)
+            p.setBrush(QBrush(fc))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawPolygon(QPolygonF(fill))
+
+            pen = QPen(self._color)
+            pen.setWidth(2)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPolyline(QPolygonF(pts))
+        finally:
             p.end()
-            return
-
-        mx  = max(self._samples) or 1.0
-        n   = len(self._samples)
-        pts = []
-        for i, v in enumerate(self._samples):
-            x = w * i / (n - 1)
-            y = h - (v / mx) * (h - 6) - 3
-            pts.append(QPointF(x, y))
-
-        fill = [QPointF(0, h)] + pts + [QPointF(w, h)]
-        fc   = QColor(self._color)
-        fc.setAlpha(45)
-        p.setBrush(QBrush(fc))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawPolygon(QPolygonF(fill))
-
-        pen = QPen(self._color)
-        pen.setWidth(2)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        p.setPen(pen)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawPolyline(QPolygonF(pts))
-        p.end()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -593,39 +607,41 @@ class DownloadButton(QPushButton):
 
     def paintEvent(self, _):
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = self.rect().adjusted(1, 1, -1, -1) if self._pressed else self.rect()
-        radius = 12
+        try:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            r = self.rect().adjusted(1, 1, -1, -1) if self._pressed else self.rect()
+            radius = 12
 
-        g = QLinearGradient(0, 0, r.width(), 0)
-        if self._hovered:
-            o = self._phase * 0.25
-            g.setColorAt(0.0, QColor("#1e3a8a"))
-            g.setColorAt(min(0.55, 0.3 + o), QColor("#2563eb"))
-            g.setColorAt(0.75, QColor("#0891b2"))
-            g.setColorAt(1.0,  QColor("#06b6d4"))
-        else:
-            g.setColorAt(0.0, self._c1)
-            g.setColorAt(0.5, self._c2)
-            g.setColorAt(1.0, self._c3)
+            g = QLinearGradient(0, 0, r.width(), 0)
+            if self._hovered:
+                o = self._phase * 0.25
+                g.setColorAt(0.0, QColor("#1e3a8a"))
+                g.setColorAt(min(0.55, 0.3 + o), QColor("#2563eb"))
+                g.setColorAt(0.75, QColor("#0891b2"))
+                g.setColorAt(1.0,  QColor("#06b6d4"))
+            else:
+                g.setColorAt(0.0, self._c1)
+                g.setColorAt(0.5, self._c2)
+                g.setColorAt(1.0, self._c3)
 
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(g))
-        p.drawRoundedRect(r, radius, radius)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(g))
+            p.drawRoundedRect(r, radius, radius)
 
-        # top gloss
-        hi = QLinearGradient(0, r.top(), 0, r.top() + r.height() * 0.45)
-        hi.setColorAt(0, QColor(255, 255, 255, 30 if self._hovered else 15))
-        hi.setColorAt(1, QColor(255, 255, 255, 0))
-        p.setBrush(QBrush(hi))
-        p.drawRoundedRect(r, radius, radius)
+            # top gloss
+            hi = QLinearGradient(0, r.top(), 0, r.top() + r.height() * 0.45)
+            hi.setColorAt(0, QColor(255, 255, 255, 30 if self._hovered else 15))
+            hi.setColorAt(1, QColor(255, 255, 255, 0))
+            p.setBrush(QBrush(hi))
+            p.drawRoundedRect(r, radius, radius)
 
-        p.setPen(QPen(QColor("white")))
-        f = QFont("Segoe UI", 13, QFont.Weight.Bold)
-        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.5)
-        p.setFont(f)
-        p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.text())
-        p.end()
+            p.setPen(QPen(QColor("white")))
+            f = QFont("Segoe UI", 13, QFont.Weight.Bold)
+            f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.5)
+            p.setFont(f)
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.text())
+        finally:
+            p.end()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -649,38 +665,40 @@ class SidebarButton(QPushButton):
 
     def paintEvent(self, _):
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = self.rect()
+        try:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            r = self.rect()
 
-        if self._active:
-            bg = QColor(BLUE); bg.setAlpha(35)
-            p.setBrush(QBrush(bg))
-        elif self.underMouse():
-            bg = QColor(SURFACE0); bg.setAlpha(180)
-            p.setBrush(QBrush(bg))
-        else:
-            p.setBrush(Qt.BrushStyle.NoBrush)
+            if self._active:
+                bg = QColor(BLUE); bg.setAlpha(35)
+                p.setBrush(QBrush(bg))
+            elif self.underMouse():
+                bg = QColor(SURFACE0); bg.setAlpha(180)
+                p.setBrush(QBrush(bg))
+            else:
+                p.setBrush(Qt.BrushStyle.NoBrush)
 
-        p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(r, 10, 10)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRoundedRect(r, 10, 10)
 
-        if self._active:
-            bar = QColor(BLUE)
-            p.setBrush(QBrush(bar))
-            p.drawRoundedRect(0, (r.height() - 24) // 2, 3, 24, 2, 2)
+            if self._active:
+                bar = QColor(BLUE)
+                p.setBrush(QBrush(bar))
+                p.drawRoundedRect(0, (r.height() - 24) // 2, 3, 24, 2, 2)
 
-        ic_color = QColor(BLUE if self._active else TEXT2)
-        p.setPen(QPen(ic_color))
-        f = QFont("Segoe UI", 16)
-        p.setFont(f)
-        p.drawText(QRect(14, 0, 30, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter, self._icon_text)
+            ic_color = QColor(BLUE if self._active else TEXT2)
+            p.setPen(QPen(ic_color))
+            f = QFont("Segoe UI", 16)
+            p.setFont(f)
+            p.drawText(QRect(14, 0, 30, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter, self._icon_text)
 
-        lbl_color = QColor(BLUE if self._active else TEXT2)
-        p.setPen(QPen(lbl_color))
-        f2 = QFont("Segoe UI", 12, QFont.Weight.Bold if self._active else QFont.Weight.Normal)
-        p.setFont(f2)
-        p.drawText(QRect(50, 0, r.width() - 58, r.height()), Qt.AlignmentFlag.AlignVCenter, self._label_text)
-        p.end()
+            lbl_color = QColor(BLUE if self._active else TEXT2)
+            p.setPen(QPen(lbl_color))
+            f2 = QFont("Segoe UI", 12, QFont.Weight.Bold if self._active else QFont.Weight.Normal)
+            p.setFont(f2)
+            p.drawText(QRect(50, 0, r.width() - 58, r.height()), Qt.AlignmentFlag.AlignVCenter, self._label_text)
+        finally:
+            p.end()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -717,7 +735,7 @@ class Toast(QWidget):
 
         self._anim_out = QTimer(self)
         self._anim_out.setSingleShot(True)
-        self._anim_out.timeout.connect(self.deleteLater)
+        self._anim_out.timeout.connect(lambda: self.deleteLater())
         self._anim_out.start(duration)
 
 
@@ -920,7 +938,26 @@ class CookieDialog(QDialog):
 
     def _apply(self):
         if self.rb_browser.isChecked():
-            self._browser = SUPPORTED_BROWSERS[self.browser_combo.currentIndex()]
+            chosen = SUPPORTED_BROWSERS[self.browser_combo.currentIndex()]
+            # Warn if the browser profile directory cannot be found on this system
+            from downloader import Downloader as _DL, BROWSER_PROFILE_PATHS
+            paths = BROWSER_PROFILE_PATHS.get(chosen, [])
+            profile_found = any(os.path.isdir(p) for p in paths)
+            if not profile_found:
+                self.browser_combo.setStyleSheet(f"border-color:{YELLOW};")
+                # Show an inline warning but still allow the user to proceed
+                # (the profile might be in a non-standard location)
+                self._browser_warning = label(
+                    f"⚠ {chosen.capitalize()} profili bu sistemde bulunamadı.",
+                    11, YELLOW, wrap=True
+                )
+                # Only add the warning once
+                lay = self.layout()
+                if lay and not hasattr(self, '_warn_added'):
+                    lay.insertWidget(lay.count() - 1, self._browser_warning)
+                    self._warn_added = True
+                # Do not block — let the user proceed anyway
+            self._browser = chosen
             self._file    = None
         elif self.rb_file.isChecked():
             p = self.file_entry.text().strip()
@@ -1192,8 +1229,9 @@ class SettingsDialog(QDialog):
 
         def _set(txt, color):
             obj = self_ref()
-            if obj:
-                QTimer.singleShot(0, lambda: _apply(obj, txt, color))
+            if obj is None:
+                return
+            QTimer.singleShot(0, lambda t=txt, c=color, o=obj: _apply(o, t, c))
 
         def _apply(obj, txt, color):
             try:
@@ -1204,8 +1242,9 @@ class SettingsDialog(QDialog):
 
         def _log(txt):
             obj = self_ref()
-            if obj:
-                QTimer.singleShot(0, lambda: _append_log(obj, txt))
+            if obj is None:
+                return
+            QTimer.singleShot(0, lambda t=txt, o=obj: _append_log(o, t))
 
         def _append_log(obj, txt):
             try:
@@ -1215,10 +1254,23 @@ class SettingsDialog(QDialog):
 
         def run():
             try:
+                # Frozen (PyInstaller .exe) ortamında yt-dlp güncellenemez:
+                # sys.executable Python değil exe'nin kendisidir ve yt-dlp
+                # zaten exe içine gömülüdür; sisteme pip kurulumu exe'yi etkilemez.
+                if getattr(sys, 'frozen', False):
+                    _set("Paketlenmiş sürümde güncelleme desteklenmiyor", YELLOW)
+                    _log("Bu uygulama .exe olarak paketlenmiş.")
+                    _log("yt-dlp, exe içine gömülüdür ve pip ile güncellenemez.")
+                    _log("Güncel sürüm için yeni bir .exe derleyin.")
+                    return
+
                 import shutil
                 pip = shutil.which("pip") or shutil.which("pip3")
-                cmd = [pip, "install", "--upgrade", "yt-dlp"] if pip else \
-                      [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"]
+                if pip:
+                    cmd = [pip, "install", "--upgrade", "yt-dlp"]
+                else:
+                    # sys.executable burada gerçek Python yorumlayıcısıdır (frozen değil)
+                    cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"]
                 _log(f"$ {' '.join(cmd)}")
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
                 for line in (result.stdout + result.stderr).splitlines():
@@ -1754,7 +1806,7 @@ class QueuePage(QWidget):
         if idx < 0 or idx >= len(self._queue):
             return
         menu = QMenu(self)
-        remove = menu.addAction("🗑  Kuyruktanteki kaldır")
+        remove = menu.addAction("🗑  Kuyruktan kaldır")
         act    = menu.exec(self.list_widget.mapToGlobal(pos))
         if act == remove:
             self._queue.pop(idx)
@@ -1943,6 +1995,12 @@ class MainWindow(QMainWindow):
     # ═══════════════════════════════════════════════════════
     #  UI BUILD
     # ═══════════════════════════════════════════════════════
+
+    def closeEvent(self, event):
+        """Ensure any active download is cancelled before the window closes."""
+        if self._is_downloading:
+            self.downloader.cancel()
+        event.accept()
 
     def _build_ui(self):
         root = QWidget(); root.setObjectName("root")

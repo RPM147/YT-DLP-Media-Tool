@@ -1,4 +1,5 @@
 import yt_dlp
+from yt_dlp.utils import DownloadError, ExtractorError, PostProcessingError
 import threading
 import os
 import sys
@@ -164,13 +165,13 @@ class Downloader:
         is_audio = (quality == "Audio Only")
 
         format_map = {
-            "Best Quality": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "2160p":  "bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160]/best",
-            "1440p":  "bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/best[height<=1440]/best",
-            "1080p":  "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/best",
-            "720p":   "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]/best",
-            "480p":   "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]/best",
-            "360p":   "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]/best",
+            "Best Quality": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
+            "2160p":  "bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best[height<=2160]",
+            "1440p":  "bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best[height<=1440]",
+            "1080p":  "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+            "720p":   "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]",
+            "480p":   "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best[height<=480]",
+            "360p":   "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=360]+bestaudio/best[height<=360]",
             "Audio Only": "bestaudio/best",
         }
         fmt_str = format_map.get(quality, "best")
@@ -189,7 +190,10 @@ class Downloader:
 
         if is_audio:
             pq = "0" if audio_quality == "best" else audio_quality
-            pp = [{'key': 'FFmpegExtractAudio', 'preferredcodec': fmt, 'preferredquality': pq}]
+            # Validate audio codec — only pass recognised audio formats
+            _VALID_AUDIO_CODECS = {"mp3", "aac", "flac", "wav", "opus", "m4a", "vorbis", "alac"}
+            codec = fmt if fmt in _VALID_AUDIO_CODECS else "mp3"
+            pp = [{'key': 'FFmpegExtractAudio', 'preferredcodec': codec, 'preferredquality': pq}]
             if embed_thumbnail:
                 pp.append({'key': 'EmbedThumbnail'})
             ydl_opts['postprocessors']   = pp
@@ -218,9 +222,19 @@ class Downloader:
                 self._ydl = ydl
                 info = ydl.extract_info(url, download=True)
                 self.on_complete(info)
+        except DownloadError as e:
+            err = str(e)
+            if self._cancel_flag or "Download cancelled" in err:
+                self.on_error("Cancelled")
+            elif "Could not copy" in err and "cookie" in err.lower():
+                self.on_error("COOKIE_DB_LOCKED")
+            else:
+                self.on_error(err)
+        except (ExtractorError, PostProcessingError) as e:
+            self.on_error(str(e))
         except Exception as e:
             err = str(e)
-            if "Download cancelled" in err:
+            if self._cancel_flag or "Download cancelled" in err:
                 self.on_error("Cancelled")
             elif "Could not copy" in err and "cookie" in err.lower():
                 self.on_error("COOKIE_DB_LOCKED")
