@@ -3,6 +3,7 @@ from yt_dlp.utils import DownloadError, ExtractorError, PostProcessingError
 import threading
 import os
 import sys
+from PyQt6.QtCore import QObject, pyqtSignal, QRunnable, QThreadPool
 
 # FFmpeg yolu
 if getattr(sys, 'frozen', False):
@@ -60,12 +61,53 @@ SUPPORTED_BROWSERS = ["brave", "chrome", "firefox", "edge", "opera", "chromium",
 THUMBNAIL_EMBED_SUPPORTED = {"mp4", "mkv", "m4a", "mp3", "ogg", "opus", "flac"}
 
 
-class Downloader:
-    def __init__(self, on_progress, on_complete, on_error, on_postprocess=None):
-        self.on_progress            = on_progress
-        self.on_complete            = on_complete
-        self.on_error               = on_error
-        self.on_postprocess         = on_postprocess or (lambda: None)
+class DownloadWorker(QRunnable):
+    def __init__(self, downloader, url, quality, fmt, output_dir, subtitles, audio_quality, playlist_items, embed_thumbnail, write_description, concurrent_fragments, start_time, end_time, embed_metadata):
+        super().__init__()
+        self.downloader = downloader
+        self.url = url
+        self.quality = quality
+        self.fmt = fmt
+        self.output_dir = output_dir
+        self.subtitles = subtitles
+        self.audio_quality = audio_quality
+        self.playlist_items = playlist_items
+        self.embed_thumbnail = embed_thumbnail
+        self.write_description = write_description
+        self.concurrent_fragments = concurrent_fragments
+        self.start_time = start_time
+        self.end_time = end_time
+        self.embed_metadata = embed_metadata
+
+    def run(self):
+        self.downloader._download(
+            self.url, self.quality, self.fmt, self.output_dir,
+            self.subtitles, self.audio_quality, self.playlist_items,
+            self.embed_thumbnail, self.write_description, self.concurrent_fragments,
+            self.start_time, self.end_time, self.embed_metadata
+        )
+
+class SearchWorker(QRunnable):
+    def __init__(self, downloader, query, limit):
+        super().__init__()
+        self.downloader = downloader
+        self.query = query
+        self.limit = limit
+
+    def run(self):
+        self.downloader._search(self.query, self.limit)
+
+
+class Downloader(QObject):
+    progress = pyqtSignal(float, str, str, int, int, object, object)
+    complete = pyqtSignal(dict)
+    error = pyqtSignal(str)
+    postprocess = pyqtSignal()
+    search_complete = pyqtSignal(list)
+    search_error = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
         self._cancel_flag           = False
         self._ydl                   = None
         self._ydl_lock              = threading.Lock()
@@ -88,15 +130,20 @@ class Downloader:
     def start(self, url, quality, fmt, output_dir,
               subtitles=False, audio_quality="192",
               playlist_items=None, embed_thumbnail=False,
-              write_description=False, concurrent_fragments=4):
+              write_description=False, concurrent_fragments=4,
+              start_time="", end_time="", embed_metadata=True):
         self._cancel_flag = False
-        threading.Thread(
-            target=self._download,
-            args=(url, quality, fmt, output_dir,
-                  subtitles, audio_quality, playlist_items,
-                  embed_thumbnail, write_description, concurrent_fragments),
-            daemon=True
-        ).start()
+        worker = DownloadWorker(
+            self, url, quality, fmt, output_dir,
+            subtitles, audio_quality, playlist_items,
+            embed_thumbnail, write_description, concurrent_fragments,
+            start_time, end_time, embed_metadata
+        )
+        QThreadPool.globalInstance().start(worker)
+
+    def search(self, query, limit=10):
+        worker = SearchWorker(self, query, limit)
+        QThreadPool.globalInstance().start(worker)
 
     def cancel(self):
         self._cancel_flag = True
@@ -167,17 +214,18 @@ class Downloader:
             eta_str    = d.get('_eta_str',   '00:00').strip()
             frag_index = d.get('fragment_index')
             frag_count = d.get('fragment_count')
-            self.on_progress(percent, speed_str, eta_str, downloaded, total, frag_index, frag_count)
+            self.progress.emit(percent, speed_str, eta_str, downloaded, total, frag_index, frag_count)
 
         elif d['status'] == 'finished':
-            self.on_progress(100.0, 'Done', '00:00', 0, 0, None, None)
+            self.progress.emit(100.0, 'Done', '00:00', 0, 0, None, None)
 
         elif d['status'] == 'processing':
-            self.on_postprocess()
+            self.postprocess.emit()
 
     def _download(self, url, quality, fmt, output_dir,
                   subtitles, audio_quality, playlist_items,
-                  embed_thumbnail, write_description, concurrent_fragments):
+                  embed_thumbnail, write_description, concurrent_fragments,
+                  start_time, end_time, embed_metadata):
         is_audio = (quality == "Audio Only")
 
         # Küçük resim gömme sadece desteklenen formatlarda aktif
@@ -255,6 +303,22 @@ class Downloader:
         if write_description:
             ydl_opts['writedescription'] = True
 
+        if start_time or end_time:
+            from yt_dlp.utils import parse_duration, download_range_func
+            try:
+                st = parse_duration(start_time) if start_time else 0
+                et = parse_duration(end_time) if end_time else float('inf')
+                if st > 0 or et != float('inf'):
+                    ydl_opts['download_ranges'] = download_range_func(None, [(st, et)])
+                    ydl_opts['force_keyframes_at_cuts'] = True
+            except Exception:
+                pass
+
+        if embed_metadata:
+            pp = ydl_opts.setdefault('postprocessors', [])
+            if not any(p.get('key') == 'FFmpegMetadata' for p in pp):
+                pp.insert(0, {'key': 'FFmpegMetadata', 'add_metadata': True})
+
         self._apply_cookie_opts(ydl_opts)
 
         try:
@@ -263,27 +327,46 @@ class Downloader:
                     self._ydl = ydl
                 info = ydl.extract_info(url, download=True)
                 if self._cancel_flag:
-                    self.on_error("Cancelled")
+                    self.error.emit("Cancelled")
                     return
-                self.on_complete(info)
+                self.complete.emit(info)
         except DownloadError as e:
             err = str(e)
             if self._cancel_flag or "Download cancelled" in err:
-                self.on_error("Cancelled")
+                self.error.emit("Cancelled")
             elif "Could not copy" in err and "cookie" in err.lower():
-                self.on_error("COOKIE_DB_LOCKED")
+                self.error.emit("COOKIE_DB_LOCKED")
             else:
-                self.on_error(err)
+                self.error.emit(err)
         except (ExtractorError, PostProcessingError) as e:
-            self.on_error(str(e))
+            self.error.emit(str(e))
         except Exception as e:
-            err = str(e)
-            if self._cancel_flag or "Download cancelled" in err:
-                self.on_error("Cancelled")
-            elif "Could not copy" in err and "cookie" in err.lower():
-                self.on_error("COOKIE_DB_LOCKED")
-            else:
-                self.on_error(err)
+            self.error.emit(f"Hata: {str(e)}")
         finally:
             with self._ydl_lock:
                 self._ydl = None
+
+    def _search(self, query, limit):
+        opts = {
+            'extract_flat': True,
+            'quiet': True,
+            'no_warnings': True,
+        }
+        self._apply_cookie_opts(opts)
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                search_query = f"ytsearch{limit}:{query}"
+                info = ydl.extract_info(search_query, download=False)
+                entries = info.get('entries', [])
+                results = []
+                for e in entries:
+                    results.append({
+                        'title': e.get('title'),
+                        'url': e.get('url'),
+                        'duration': e.get('duration'),
+                        'uploader': e.get('uploader', 'Bilinmiyor'),
+                        'thumbnails': e.get('thumbnails', [])
+                    })
+                self.search_complete.emit(results)
+        except Exception as e:
+            self.search_error.emit(str(e))
