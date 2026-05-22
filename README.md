@@ -63,3 +63,7 @@ python main.py
 ## ⚖️ Yasal Uyarı
 
 Bu araç yalnızca eğitim, kişisel kullanım ve açık kaynak geliştirme mantığıyla tasarlanmıştır. İçerik indirmeden önce ilgili platformların (YouTube vb.) hizmet şartlarını ve telif haklarını kontrol etmeniz önerilir. Telif hakkıyla korunan içeriklerin izinsiz veya ticari amaçlı kullanımı ve indirilmesi yasal sorumluluk doğurabilir. Tüm sorumluluk son kullanıcıya aittir.
+
+## Lisans
+
+Bu proje **[GNU Affero General Public License v3.0 (AGPL-3.0)](https://github.com/kursatabayli/IHateDPI/blob/development/LICENSE)** ile lisanslanmıştır.
