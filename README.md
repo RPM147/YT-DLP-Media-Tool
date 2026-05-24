@@ -66,4 +66,4 @@ Bu araç yalnızca eğitim, kişisel kullanım ve açık kaynak geliştirme mant
 
 ## Lisans
 
-Bu proje **[GNU Affero General Public License v3.0 (AGPL-3.0)](https://github.com/kursatabayli/IHateDPI/blob/development/LICENSE)** ile lisanslanmıştır.
+Bu proje GNU Affero General Public License v3.0 (AGPL-3.0) ile lisanslanmıştır.
