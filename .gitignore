@@ -1,0 +1,25 @@
+# Python Cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Test
+test_downloads/
+
+# FFMPEG
+ffmpeg.exe
+ffplay.exe
+ffprobe.exe
+
+
+.vscode/
+.idea/
+pyflakes_out.txt
+pyflakes_output.txt
+*.log
+*.sqlite3
+*.db
+
+# PyInstaller build output
+build/
+dist/

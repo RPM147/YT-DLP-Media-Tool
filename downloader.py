@@ -5,15 +5,24 @@ import os
 import sys
 from PyQt6.QtCore import QObject, pyqtSignal, QRunnable, QThreadPool
 
-# FFmpeg yolu
 if getattr(sys, 'frozen', False):
-    _base = sys._MEIPASS
+    _base_exe = os.path.dirname(sys.executable)
+    if os.path.exists(os.path.join(_base_exe, "ffmpeg.exe")):
+        _base = _base_exe
+    else:
+        _base = sys._MEIPASS
 else:
     _base = os.path.dirname(os.path.abspath(__file__))
 
 _ffmpeg = os.path.join(_base, "ffmpeg.exe")
-if os.path.isfile(_ffmpeg):
+_FFMPEG_LOCATION = _base if os.path.isfile(_ffmpeg) else None
+if _FFMPEG_LOCATION:
     os.environ["PATH"] = _base + os.pathsep + os.environ.get("PATH", "")
+
+
+def _apply_ffmpeg_opts(opts):
+    if _FFMPEG_LOCATION:
+        opts['ffmpeg_location'] = _FFMPEG_LOCATION
 
 BROWSER_PROFILE_PATHS = {
     "chrome": [
@@ -147,18 +156,12 @@ class Downloader(QObject):
 
     def cancel(self):
         self._cancel_flag = True
-        with self._ydl_lock:
-            ydl = self._ydl
-        if ydl:
-            try:
-                ydl.params['abort_on_error'] = True
-            except Exception:
-                pass
 
     def get_info(self, url, flat_playlist=False):
         opts = {'quiet': True, 'no_warnings': True}
         if flat_playlist:
             opts['extract_flat'] = 'in_playlist'
+        _apply_ffmpeg_opts(opts)
         self._apply_cookie_opts(opts)
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -219,7 +222,10 @@ class Downloader(QObject):
         elif d['status'] == 'finished':
             self.progress.emit(100.0, 'Done', '00:00', 0, 0, None, None)
 
-        elif d['status'] == 'processing':
+    def _postprocess_hook(self, d):
+        # yt-dlp post-processor durumları: 'started' / 'processing' / 'finished'.
+        # Birleştirme/dönüştürme başladığında "İşleniyor…" göstergesini tetikle.
+        if d.get('status') == 'started':
             self.postprocess.emit()
 
     def _download(self, url, quality, fmt, output_dir,
@@ -264,10 +270,12 @@ class Downloader(QObject):
             'format':                        fmt_str,
             'outtmpl':                       os.path.join(output_dir, '%(title)s.%(ext)s'),
             'progress_hooks':                [self._progress_hook],
+            'postprocessor_hooks':           [self._postprocess_hook],
             'quiet':                         True,
             'no_warnings':                   True,
             'concurrent_fragment_downloads': concurrent_fragments,
         }
+        _apply_ffmpeg_opts(ydl_opts)
 
         if playlist_items:
             ydl_opts['playlist_items'] = playlist_items
@@ -352,6 +360,7 @@ class Downloader(QObject):
             'quiet': True,
             'no_warnings': True,
         }
+        _apply_ffmpeg_opts(opts)
         self._apply_cookie_opts(opts)
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -364,7 +373,7 @@ class Downloader(QObject):
                         'title': e.get('title'),
                         'url': e.get('url'),
                         'duration': e.get('duration'),
-                        'uploader': e.get('uploader', 'Bilinmiyor'),
+                        'uploader': e.get('uploader') or 'Bilinmiyor',
                         'thumbnails': e.get('thumbnails', [])
                     })
                 self.search_complete.emit(results)
