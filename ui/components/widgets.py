@@ -1,11 +1,11 @@
 
-import os, json, datetime, weakref, subprocess, sys, threading
+import os, subprocess, sys
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
 from utils.theme import *
 from core.config import *
-from downloader import Downloader, AUDIO_FORMATS, VIDEO_FORMATS, AUDIO_QUALITIES, VIDEO_QUALITIES, SUPPORTED_BROWSERS, THUMBNAIL_EMBED_SUPPORTED, BROWSER_PROFILE_PATHS
+from downloader import AUDIO_FORMATS, VIDEO_FORMATS, AUDIO_QUALITIES, VIDEO_QUALITIES, SUPPORTED_BROWSERS, THUMBNAIL_EMBED_SUPPORTED, BROWSER_PROFILE_PATHS
 def hdivider() -> QFrame:
     f = QFrame()
     f.setFixedHeight(1)
@@ -67,6 +67,174 @@ def card(layout=None) -> QWidget:
         layout.setSpacing(10)
         w.setLayout(layout)
     return w
+
+
+# ═══════════════════════════════════════════════════════════
+#  OPTIONS CARD  (DownloadPage + PlayerPage ortak seçenek kartı)
+# ═══════════════════════════════════════════════════════════
+class OptionsCard(QWidget):
+    """Kalite/format/ses/klasör/zaman aralığı/checkbox alanlarını içeren,
+    DownloadPage ve PlayerPage tarafından paylaşılan indirme seçenekleri kartı."""
+
+    def __init__(self, settings: dict, parent=None):
+        super().__init__(parent)
+        self._settings = settings
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        c_lay = QVBoxLayout()
+        c     = card(c_lay)
+
+        c_lay.addWidget(label("⚙ İndirme Seçenekleri", 12, TEXT2, bold=True))
+
+        row1 = QHBoxLayout(); row1.setSpacing(12)
+
+        # Kalite
+        qcol = QVBoxLayout(); qcol.setSpacing(4)
+        qcol.addWidget(label("Kalite", 11, TEXT3))
+        self.quality_combo = QComboBox()
+        self.quality_combo.addItems(VIDEO_QUALITIES)
+        self.quality_combo.setCurrentText(self._settings.get("default_quality", "Best Quality"))
+        self.quality_combo.currentTextChanged.connect(self._on_quality_changed)
+        qcol.addWidget(self.quality_combo)
+        row1.addLayout(qcol)
+
+        # Format
+        fcol = QVBoxLayout(); fcol.setSpacing(4)
+        fcol.addWidget(label("Format", 11, TEXT3))
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(VIDEO_FORMATS)
+        self.format_combo.currentTextChanged.connect(self._on_format_changed)
+        fcol.addWidget(self.format_combo)
+        row1.addLayout(fcol)
+
+        # Ses Kalitesi
+        acol = QVBoxLayout(); acol.setSpacing(4); acol.setContentsMargins(0, 0, 0, 0)
+        acol.addWidget(label("Ses Kalitesi", 11, TEXT3))
+        self.aq_combo = QComboBox()
+        self.aq_combo.addItems(AUDIO_QUALITIES)
+        self.aq_combo.setCurrentText(self._settings.get("default_audio_quality", "192"))
+        acol.addWidget(self.aq_combo)
+        self._aq_widget = QWidget(); self._aq_widget.setLayout(acol)
+        sp = self._aq_widget.sizePolicy()
+        sp.setRetainSizeWhenHidden(False)
+        self._aq_widget.setSizePolicy(sp)
+        self._aq_widget.hide()
+        row1.addWidget(self._aq_widget)
+
+        # Kayıt klasörü
+        pcol = QVBoxLayout(); pcol.setSpacing(4)
+        pcol.addWidget(label("Kayıt Klasörü", 11, TEXT3))
+        prow = QHBoxLayout(); prow.setSpacing(6)
+        self.path_entry = QLineEdit(
+            self._settings.get("download_path", os.path.expanduser("~/Downloads"))
+        )
+        self.path_entry.setReadOnly(True)
+        self.path_entry.setFixedHeight(36)
+        prow.addWidget(self.path_entry, stretch=1)
+        br = QPushButton("📁"); br.setFixedSize(36, 36); br.clicked.connect(self._browse_path)
+        prow.addWidget(br)
+        pcol.addLayout(prow)
+        row1.addLayout(pcol, stretch=1)
+
+        c_lay.addLayout(row1)
+        c_lay.addWidget(hdivider())
+
+        # Zaman aralığı / kırpma
+        c_lay.addWidget(label("Zaman Aralığı / Kırpma (Opsiyonel)", 12, TEXT2))
+        trow = QHBoxLayout(); trow.setSpacing(12)
+
+        scol = QVBoxLayout(); scol.setSpacing(4)
+        scol.addWidget(label("Başlangıç (SS:DD:SS)", 11, TEXT3))
+        self.start_time = QLineEdit()
+        self.start_time.setPlaceholderText("00:00:00")
+        self.start_time.setFixedWidth(100)
+        scol.addWidget(self.start_time)
+        trow.addLayout(scol)
+
+        ecol = QVBoxLayout(); ecol.setSpacing(4)
+        ecol.addWidget(label("Bitiş (SS:DD:SS)", 11, TEXT3))
+        self.end_time = QLineEdit()
+        self.end_time.setPlaceholderText("00:00:00")
+        self.end_time.setFixedWidth(100)
+        ecol.addWidget(self.end_time)
+        trow.addLayout(ecol)
+
+        trow.addStretch()
+        c_lay.addLayout(trow)
+        c_lay.addWidget(hdivider())
+
+        # Onay kutuları
+        row2 = QHBoxLayout(); row2.setSpacing(20)
+        self.subs_check  = QCheckBox("Altyazı göm")
+        self.thumb_check = QCheckBox("Küçük resim göm")
+        self.desc_check  = QCheckBox("Açıklamayı kaydet")
+        for cb, key in [
+            (self.subs_check,  "embed_subtitles"),
+            (self.thumb_check, "embed_thumbnail"),
+            (self.desc_check,  "write_description"),
+        ]:
+            cb.setChecked(self._settings.get(key, False))
+            row2.addWidget(cb)
+        row2.addStretch()
+        c_lay.addLayout(row2)
+
+        outer.addWidget(c)
+        self._on_quality_changed(self.quality_combo.currentText())
+
+    # ── Internal ──────────────────────────────────────────
+    def _browse_path(self):
+        folder = QFileDialog.getExistingDirectory(self, "Klasör Seç", self.path_entry.text())
+        if folder:
+            self.path_entry.setText(folder)
+            self._settings["download_path"] = folder
+            save_settings(self._settings)
+
+    def _on_quality_changed(self, quality: str):
+        is_audio = (quality == "Audio Only")
+        self._aq_widget.setVisible(is_audio)
+        self.format_combo.blockSignals(True)
+        self.format_combo.clear()
+        self.format_combo.addItems(AUDIO_FORMATS if is_audio else VIDEO_FORMATS)
+        df = self._settings.get("default_format", "mp4")
+        if is_audio:
+            self.format_combo.setCurrentText(df if df in AUDIO_FORMATS else "mp3")
+        else:
+            self.format_combo.setCurrentText(df if df in VIDEO_FORMATS else "mp4")
+        self.format_combo.blockSignals(False)
+        self._on_format_changed(self.format_combo.currentText())
+
+    def _on_format_changed(self, fmt: str):
+        """webm gibi desteklenmeyen formatlarda 'Küçük resim göm' seçeneğini gizle."""
+        can_embed = fmt in THUMBNAIL_EMBED_SUPPORTED
+        self.thumb_check.setVisible(can_embed)
+        if not can_embed:
+            self.thumb_check.setChecked(False)
+
+    # ── Public ────────────────────────────────────────────
+    def update_settings(self, s: dict):
+        self._settings = s
+        self.quality_combo.setCurrentText(s.get("default_quality", "Best Quality"))
+        self.subs_check.setChecked(s.get("embed_subtitles", False))
+        self.thumb_check.setChecked(s.get("embed_thumbnail", False))
+        self.desc_check.setChecked(s.get("write_description", False))
+        self._on_quality_changed(self.quality_combo.currentText())
+
+    def values(self) -> dict:
+        """Geçerli seçimleri QueueItem kwargs'ına uygun bir sözlük olarak döndürür."""
+        return {
+            "quality":           self.quality_combo.currentText(),
+            "fmt":               self.format_combo.currentText(),
+            "output_dir":        self.path_entry.text(),
+            "subtitles":         self.subs_check.isChecked(),
+            "audio_quality":     self.aq_combo.currentText(),
+            "embed_thumbnail":   self.thumb_check.isChecked(),
+            "write_description": self.desc_check.isChecked(),
+            "start_time":        self.start_time.text().strip(),
+            "end_time":          self.end_time.text().strip(),
+            "embed_metadata":    self._settings.get("embed_metadata", True),
+        }
 
 
 # ═══════════════════════════════════════════════════════════
@@ -702,6 +870,7 @@ class SettingsDialog(QDialog):
 
         tabs.addTab(self._tab_general(),  "⚙  Genel")
         tabs.addTab(self._tab_advanced(), "🔧 Gelişmiş")
+        tabs.addTab(self._tab_transcripts(), "T  Transkript")
         tabs.addTab(self._tab_update(),   "🔄 Güncelleme")
 
         root.addWidget(hdivider())
@@ -811,6 +980,119 @@ class SettingsDialog(QDialog):
         lay.addStretch()
         return w
 
+    def _tab_transcripts(self) -> QWidget:
+        w = QWidget()
+        root = QVBoxLayout(w)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setObjectName("dialog")
+
+        inner = QWidget()
+        inner.setObjectName("dialog")
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(16)
+
+        lay.addWidget(label("Transcript Output", 12, TEXT2))
+        out_row = QHBoxLayout()
+        self.transcript_output_entry = QLineEdit(
+            self._s.get("transcript_output_path", DEFAULT_SETTINGS["transcript_output_path"])
+        )
+        self.transcript_output_entry.setReadOnly(True)
+        out_row.addWidget(self.transcript_output_entry, stretch=1)
+        out_btn = QPushButton("Gozat")
+        out_btn.setFixedWidth(80)
+        out_btn.clicked.connect(self._browse_transcript_output)
+        out_row.addWidget(out_btn)
+        lay.addLayout(out_row)
+        lay.addWidget(hdivider())
+
+        row = QHBoxLayout()
+        row.setSpacing(12)
+
+        lang_col = QVBoxLayout()
+        lang_col.addWidget(label("Language Priority", 12, TEXT2))
+        self.transcript_languages_entry = QLineEdit(
+            self._s.get("transcript_languages", DEFAULT_SETTINGS["transcript_languages"])
+        )
+        lang_col.addWidget(self.transcript_languages_entry)
+        row.addLayout(lang_col, stretch=1)
+
+        fmt_col = QVBoxLayout()
+        fmt_col.addWidget(label("Output Format", 12, TEXT2))
+        self.transcript_format_combo = QComboBox()
+        self.transcript_format_combo.addItems(["both", "txt", "md"])
+        self.transcript_format_combo.setCurrentText(
+            self._s.get("transcript_output_format", DEFAULT_SETTINGS["transcript_output_format"])
+        )
+        fmt_col.addWidget(self.transcript_format_combo)
+        row.addLayout(fmt_col)
+        lay.addLayout(row)
+        lay.addWidget(hdivider())
+
+        lay.addWidget(label("Transcript Defaults", 12, TEXT2))
+        self.transcript_manual_only_check = QCheckBox("Manual only")
+        self.transcript_auto_fallback_check = QCheckBox("Auto fallback")
+        self.transcript_keep_cues_check = QCheckBox("Keep cues")
+        self.transcript_timestamps_check = QCheckBox("Timestamps")
+        self.transcript_metadata_only_check = QCheckBox("Metadata only")
+        for cb, key in [
+            (self.transcript_manual_only_check, "transcript_manual_only"),
+            (self.transcript_auto_fallback_check, "transcript_auto_fallback"),
+            (self.transcript_keep_cues_check, "transcript_keep_cues"),
+            (self.transcript_timestamps_check, "transcript_timestamps"),
+            (self.transcript_metadata_only_check, "transcript_metadata_only"),
+        ]:
+            cb.setChecked(self._s.get(key, DEFAULT_SETTINGS[key]))
+            lay.addWidget(cb)
+        lay.addWidget(hdivider())
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(10)
+
+        self.transcript_retries_spin = self._settings_spin(
+            1, 20, self._s.get("transcript_retries", DEFAULT_SETTINGS["transcript_retries"])
+        )
+        self.transcript_progress_interval_spin = self._settings_spin(
+            1,
+            10000,
+            self._s.get(
+                "transcript_progress_interval",
+                DEFAULT_SETTINGS["transcript_progress_interval"],
+            ),
+        )
+        self.transcript_delay_spin = self._settings_double_spin(
+            0.0, 120.0, self._s.get("transcript_delay", DEFAULT_SETTINGS["transcript_delay"])
+        )
+        self.transcript_retry_delay_spin = self._settings_double_spin(
+            0.0,
+            120.0,
+            self._s.get("transcript_retry_delay", DEFAULT_SETTINGS["transcript_retry_delay"]),
+        )
+
+        fields = [
+            ("Retries", self.transcript_retries_spin),
+            ("Progress interval", self.transcript_progress_interval_spin),
+            ("Delay", self.transcript_delay_spin),
+            ("Retry delay", self.transcript_retry_delay_spin),
+        ]
+        for i, (text, widget) in enumerate(fields):
+            row_idx = i // 2
+            col_idx = (i % 2) * 2
+            grid.addWidget(label(text, 12, TEXT2), row_idx, col_idx)
+            grid.addWidget(widget, row_idx, col_idx + 1)
+        lay.addLayout(grid)
+        lay.addStretch()
+
+        scroll.setWidget(inner)
+        root.addWidget(scroll)
+        return w
+
     def _tab_update(self) -> QWidget:
         w   = QWidget(); w.setObjectName("dialog")
         lay = QVBoxLayout(w)
@@ -849,6 +1131,38 @@ class SettingsDialog(QDialog):
             self._s["download_path"] = folder
             self.path_entry.setText(folder)
 
+    def _browse_transcript_output(self):
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Transcript klasoru",
+            self.transcript_output_entry.text(),
+        )
+        if folder:
+            self._s["transcript_output_path"] = folder
+            self.transcript_output_entry.setText(folder)
+
+    @staticmethod
+    def _settings_spin(min_value: int, max_value: int, value: int) -> QSpinBox:
+        spin = QSpinBox()
+        spin.setRange(min_value, max_value)
+        spin.setValue(value)
+        spin.setFixedWidth(90)
+        return spin
+
+    @staticmethod
+    def _settings_double_spin(
+        min_value: float,
+        max_value: float,
+        value: float,
+    ) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(min_value, max_value)
+        spin.setDecimals(2)
+        spin.setSingleStep(0.25)
+        spin.setValue(value)
+        spin.setFixedWidth(90)
+        return spin
+
     def _reset_defaults(self):
         for k, v in DEFAULT_SETTINGS.items():
             self._s[k] = v
@@ -881,6 +1195,24 @@ class SettingsDialog(QDialog):
         self._s["embed_metadata"]        = self.metadata_check.isChecked()
         self._s["concurrent_fragments"]  = self.frag_slider.value()
         self._s["max_history"]           = self.hist_limit.value()
+        self._s["transcript_output_path"] = (
+            self.transcript_output_entry.text().strip()
+            or DEFAULT_SETTINGS["transcript_output_path"]
+        )
+        self._s["transcript_languages"] = (
+            self.transcript_languages_entry.text().strip()
+            or DEFAULT_SETTINGS["transcript_languages"]
+        )
+        self._s["transcript_output_format"] = self.transcript_format_combo.currentText()
+        self._s["transcript_timestamps"] = self.transcript_timestamps_check.isChecked()
+        self._s["transcript_metadata_only"] = self.transcript_metadata_only_check.isChecked()
+        self._s["transcript_auto_fallback"] = self.transcript_auto_fallback_check.isChecked()
+        self._s["transcript_manual_only"] = self.transcript_manual_only_check.isChecked()
+        self._s["transcript_keep_cues"] = self.transcript_keep_cues_check.isChecked()
+        self._s["transcript_retries"] = self.transcript_retries_spin.value()
+        self._s["transcript_retry_delay"] = self.transcript_retry_delay_spin.value()
+        self._s["transcript_progress_interval"] = self.transcript_progress_interval_spin.value()
+        self._s["transcript_delay"] = self.transcript_delay_spin.value()
         self.accept()
 
     def result_settings(self) -> dict:

@@ -1,6 +1,11 @@
 import os
 import json
 from utils.theme import BLUE
+from core.transcripts.models import (
+    DEFAULT_TRANSCRIPT_LANGUAGES,
+    DEFAULT_TRANSCRIPT_OUTPUT_FORMAT,
+    DEFAULT_TRANSCRIPT_PROGRESS_INTERVAL,
+)
 
 SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".mediafetch_settings.json")
 HISTORY_FILE  = os.path.join(os.path.expanduser("~"), ".mediafetch_history.json")
@@ -17,6 +22,18 @@ DEFAULT_SETTINGS = {
     "max_history":          50,
     "theme_accent":         BLUE,
     "concurrent_fragments": 4,
+    "transcript_output_path": os.path.join(os.path.expanduser("~"), "Downloads", "Transcripts"),
+    "transcript_languages": ",".join(DEFAULT_TRANSCRIPT_LANGUAGES),
+    "transcript_output_format": DEFAULT_TRANSCRIPT_OUTPUT_FORMAT,
+    "transcript_timestamps": False,
+    "transcript_metadata_only": False,
+    "transcript_auto_fallback": True,
+    "transcript_manual_only": False,
+    "transcript_keep_cues": False,
+    "transcript_retries": 3,
+    "transcript_retry_delay": 2.0,
+    "transcript_progress_interval": DEFAULT_TRANSCRIPT_PROGRESS_INTERVAL,
+    "transcript_delay": 0.5,
 }
 
 def load_settings() -> dict:
@@ -45,7 +62,8 @@ def save_settings(s: dict):
 def load_history() -> list:
     try:
         with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        return data if isinstance(data, list) else []
     except Exception:
         return []
 

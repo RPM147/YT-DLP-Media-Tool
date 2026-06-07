@@ -1,12 +1,12 @@
 
-import os, json, datetime, weakref, subprocess, sys
+import os, datetime
+from pathlib import Path
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
 from utils.theme import *
 from core.config import *
 from ui.components.widgets import *
-from downloader import Downloader, AUDIO_FORMATS, VIDEO_FORMATS, AUDIO_QUALITIES, VIDEO_QUALITIES, SUPPORTED_BROWSERS, THUMBNAIL_EMBED_SUPPORTED, BROWSER_PROFILE_PATHS
 class Bridge(QObject):
     progress       = pyqtSignal(float, str, str, int, int, object, object)
     complete       = pyqtSignal(object)
@@ -15,6 +15,7 @@ class Bridge(QObject):
     playlist_ready = pyqtSignal(object)
     info_fetched   = pyqtSignal(object)
     postprocess    = pyqtSignal()
+    log            = pyqtSignal(str, str)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -56,11 +57,7 @@ class DownloadPage(QWidget):
 
     def update_settings(self, s: dict):
         self._settings = s
-        self.quality_combo.setCurrentText(s.get("default_quality", "Best Quality"))
-        self.subs_check.setChecked(s.get("embed_subtitles", False))
-        self.thumb_check.setChecked(s.get("embed_thumbnail", False))
-        self.desc_check.setChecked(s.get("write_description", False))
-        self._on_quality_changed(self.quality_combo.currentText())
+        self.options.update_settings(s)
 
     def _build(self):
         lay = QVBoxLayout(self)
@@ -78,7 +75,8 @@ class DownloadPage(QWidget):
 
         self._build_url_card()
         self._build_preview_card()
-        self._build_options_card()
+        self.options = OptionsCard(self._settings)
+        self._lay.addWidget(self.options)
         self._build_dl_button()
         self._build_progress_card()
         self._lay.addStretch()
@@ -154,107 +152,6 @@ class DownloadPage(QWidget):
         c_lay.addLayout(info_col, stretch=1)
 
         self._lay.addWidget(c)
-
-    def _build_options_card(self):
-        c_lay = QVBoxLayout()
-        c     = card(c_lay)
-
-        c_lay.addWidget(label("⚙ İndirme Seçenekleri", 12, TEXT2, bold=True))
-
-        row1 = QHBoxLayout(); row1.setSpacing(12)
-
-        # Quality
-        qcol = QVBoxLayout(); qcol.setSpacing(4)
-        qcol.addWidget(label("Kalite", 11, TEXT3))
-        self.quality_combo = QComboBox()
-        self.quality_combo.addItems(VIDEO_QUALITIES)
-        self.quality_combo.setCurrentText(self._settings.get("default_quality", "Best Quality"))
-        self.quality_combo.currentTextChanged.connect(self._on_quality_changed)
-        qcol.addWidget(self.quality_combo)
-        row1.addLayout(qcol)
-
-        # Format
-        fcol = QVBoxLayout(); fcol.setSpacing(4)
-        fcol.addWidget(label("Format", 11, TEXT3))
-        self.format_combo = QComboBox()
-        self.format_combo.addItems(VIDEO_FORMATS)
-        self.format_combo.currentTextChanged.connect(self._on_format_changed)
-        fcol.addWidget(self.format_combo)
-        row1.addLayout(fcol)
-
-        # Audio Quality
-        acol = QVBoxLayout(); acol.setSpacing(4); acol.setContentsMargins(0, 0, 0, 0)
-        acol.addWidget(label("Ses Kalitesi", 11, TEXT3))
-        self.aq_combo = QComboBox()
-        self.aq_combo.addItems(AUDIO_QUALITIES)
-        self.aq_combo.setCurrentText(self._settings.get("default_audio_quality", "192"))
-        acol.addWidget(self.aq_combo)
-        self._aq_widget = QWidget(); self._aq_widget.setLayout(acol)
-        sp = self._aq_widget.sizePolicy()
-        sp.setRetainSizeWhenHidden(False)
-        self._aq_widget.setSizePolicy(sp)
-        self._aq_widget.hide()
-        row1.addWidget(self._aq_widget)
-
-        # Save path
-        pcol = QVBoxLayout(); pcol.setSpacing(4)
-        pcol.addWidget(label("Kayıt Klasörü", 11, TEXT3))
-        prow = QHBoxLayout(); prow.setSpacing(6)
-        self.path_entry = QLineEdit(
-            self._settings.get("download_path", os.path.expanduser("~/Downloads"))
-        )
-        self.path_entry.setReadOnly(True)
-        self.path_entry.setFixedHeight(36)
-        prow.addWidget(self.path_entry, stretch=1)
-        br = QPushButton("📁"); br.setFixedSize(36, 36); br.clicked.connect(self._browse_path)
-        prow.addWidget(br)
-        pcol.addLayout(prow)
-        row1.addLayout(pcol, stretch=1)
-
-        c_lay.addLayout(row1)
-        c_lay.addWidget(hdivider())
-
-        # Time Range
-        c_lay.addWidget(label("Zaman Aralığı / Kırpma (Opsiyonel)", 12, TEXT2))
-        trow = QHBoxLayout(); trow.setSpacing(12)
-        
-        scol = QVBoxLayout(); scol.setSpacing(4)
-        scol.addWidget(label("Başlangıç (SS:DD:SS)", 11, TEXT3))
-        self.start_time = QLineEdit()
-        self.start_time.setPlaceholderText("00:00:00")
-        self.start_time.setFixedWidth(100)
-        scol.addWidget(self.start_time)
-        trow.addLayout(scol)
-
-        ecol = QVBoxLayout(); ecol.setSpacing(4)
-        ecol.addWidget(label("Bitiş (SS:DD:SS)", 11, TEXT3))
-        self.end_time = QLineEdit()
-        self.end_time.setPlaceholderText("00:00:00")
-        self.end_time.setFixedWidth(100)
-        ecol.addWidget(self.end_time)
-        trow.addLayout(ecol)
-        
-        trow.addStretch()
-        c_lay.addLayout(trow)
-        c_lay.addWidget(hdivider())
-
-        # Checkboxes
-        row2 = QHBoxLayout(); row2.setSpacing(20)
-        self.subs_check  = QCheckBox("Altyazı göm")
-        self.thumb_check = QCheckBox("Küçük resim göm")
-        self.desc_check  = QCheckBox("Açıklamayı kaydet")
-        for cb, key in [
-            (self.subs_check,  "embed_subtitles"),
-            (self.thumb_check, "embed_thumbnail"),
-            (self.desc_check,  "write_description"),
-        ]:
-            cb.setChecked(self._settings.get(key, False))
-            row2.addWidget(cb)
-        row2.addStretch()
-        c_lay.addLayout(row2)
-
-        self._lay.addWidget(c)
-        self._on_quality_changed(self.quality_combo.currentText())
 
     def _build_dl_button(self):
         btn_row = QHBoxLayout(); btn_row.setSpacing(10)
@@ -342,52 +239,11 @@ class DownloadPage(QWidget):
         if u:
             QDesktopServices.openUrl(QUrl(u))
 
-    def _browse_path(self):
-        folder = QFileDialog.getExistingDirectory(self, "Klasör Seç", self.path_entry.text())
-        if folder:
-            self.path_entry.setText(folder)
-            self._settings["download_path"] = folder
-            save_settings(self._settings)
-
-    def _on_quality_changed(self, quality: str):
-        is_audio = (quality == "Audio Only")
-        self._aq_widget.setVisible(is_audio)
-        self.format_combo.blockSignals(True)
-        self.format_combo.clear()
-        self.format_combo.addItems(AUDIO_FORMATS if is_audio else VIDEO_FORMATS)
-        df = self._settings.get("default_format", "mp4")
-        if is_audio:
-            self.format_combo.setCurrentText(df if df in AUDIO_FORMATS else "mp3")
-        else:
-            self.format_combo.setCurrentText(df if df in VIDEO_FORMATS else "mp4")
-        self.format_combo.blockSignals(False)
-        # Thumbnail visibility güncelle
-        self._on_format_changed(self.format_combo.currentText())
-
-    def _on_format_changed(self, fmt: str):
-        """webm seçiliyken 'Küçük resim göm' seçeneğini gizle."""
-        can_embed = fmt in THUMBNAIL_EMBED_SUPPORTED
-        self.thumb_check.setVisible(can_embed)
-        if not can_embed:
-            self.thumb_check.setChecked(False)
-
     def _make_item(self) -> QueueItem | None:
         url = self.url_entry.text().strip()
         if not url:
             return None
-        return QueueItem(
-            url              = url,
-            quality          = self.quality_combo.currentText(),
-            fmt              = self.format_combo.currentText(),
-            output_dir       = self.path_entry.text(),
-            subtitles        = self.subs_check.isChecked(),
-            audio_quality    = self.aq_combo.currentText(),
-            embed_thumbnail  = self.thumb_check.isChecked(),
-            write_description= self.desc_check.isChecked(),
-            start_time       = self.start_time.text().strip(),
-            end_time         = self.end_time.text().strip(),
-            embed_metadata   = self._settings.get("embed_metadata", True)
-        )
+        return QueueItem(url=url, **self.options.values())
 
     def _emit_download(self):
         item = self._make_item()
@@ -479,6 +335,448 @@ class DownloadPage(QWidget):
 
     def enable_info_btn(self, v: bool):
         self.info_btn.setEnabled(v)
+
+
+# ═══════════════════════════════════════════════════════════
+#  TRANSCRIPT PAGE
+# ═══════════════════════════════════════════════════════════
+class TranscriptPage(QWidget):
+    request_start = pyqtSignal(object)
+    request_cancel = pyqtSignal()
+    request_open_path = pyqtSignal(str)
+
+    def __init__(self, settings: dict, parent=None):
+        super().__init__(parent)
+        self._settings = settings
+        self._build()
+
+    def _setting(self, key: str):
+        return self._settings.get(key, DEFAULT_SETTINGS[key])
+
+    def _default_output_dir(self) -> str:
+        return self._settings.get(
+            "transcript_output_path",
+            self._settings.get("download_path", DEFAULT_SETTINGS["transcript_output_path"]),
+        )
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+
+        inner = QWidget()
+        inner.setObjectName("root")
+        self._lay = QVBoxLayout(inner)
+        self._lay.setContentsMargins(28, 24, 28, 28)
+        self._lay.setSpacing(14)
+
+        hdr = QHBoxLayout()
+        hdr.addWidget(label("Transkriptler", 16, TEXT, bold=True))
+        hdr.addStretch()
+        self.status_lbl = label("Hazir", 12, TEXT3)
+        hdr.addWidget(self.status_lbl)
+        self._lay.addLayout(hdr)
+
+        self._build_source_card()
+        self._build_options_card()
+        self._build_run_card()
+        self._build_progress_card()
+        self._lay.addStretch()
+
+        scroll.setWidget(inner)
+        lay.addWidget(scroll)
+
+    def _build_source_card(self):
+        c_lay = QVBoxLayout()
+        c = card(c_lay)
+        c_lay.addWidget(label("Kaynak", 12, TEXT2, bold=True))
+
+        url_row = QHBoxLayout()
+        self.url_entry = QLineEdit()
+        self.url_entry.setPlaceholderText("YouTube kanal, playlist veya video URL")
+        self.url_entry.setFixedHeight(40)
+        url_row.addWidget(self.url_entry, stretch=1)
+        paste = QPushButton("Yapistir")
+        paste.setFixedHeight(40)
+        paste.clicked.connect(self._paste_url)
+        url_row.addWidget(paste)
+        c_lay.addLayout(url_row)
+
+        out_row = QHBoxLayout()
+        self.output_entry = QLineEdit(self._default_output_dir())
+        self.output_entry.setReadOnly(True)
+        self.output_entry.setFixedHeight(36)
+        out_row.addWidget(self.output_entry, stretch=1)
+        browse = QPushButton("Gozat")
+        browse.setFixedSize(80, 36)
+        browse.clicked.connect(self._browse_output)
+        out_row.addWidget(browse)
+        c_lay.addLayout(out_row)
+
+        self._lay.addWidget(c)
+
+    def _build_options_card(self):
+        c_lay = QVBoxLayout()
+        c = card(c_lay)
+        c_lay.addWidget(label("Ayarlar", 12, TEXT2, bold=True))
+
+        row1 = QHBoxLayout()
+        row1.setSpacing(12)
+
+        lang_col = QVBoxLayout()
+        lang_col.addWidget(label("Dil onceligi", 11, TEXT3))
+        self.lang_entry = QLineEdit(self._setting("transcript_languages"))
+        self.lang_entry.setFixedHeight(36)
+        lang_col.addWidget(self.lang_entry)
+        row1.addLayout(lang_col, stretch=1)
+
+        fmt_col = QVBoxLayout()
+        fmt_col.addWidget(label("Cikti", 11, TEXT3))
+        self.format_combo = QComboBox()
+        self.format_combo.addItems(["both", "txt", "md"])
+        self.format_combo.setCurrentText(self._setting("transcript_output_format"))
+        self.format_combo.setFixedHeight(36)
+        fmt_col.addWidget(self.format_combo)
+        row1.addLayout(fmt_col)
+
+        c_lay.addLayout(row1)
+        c_lay.addWidget(hdivider())
+
+        row2 = QHBoxLayout()
+        row2.setSpacing(16)
+        self.manual_only_check = QCheckBox("Manual only")
+        self.auto_fallback_check = QCheckBox("Auto fallback")
+        self.keep_cues_check = QCheckBox("Cue koru")
+        self.timestamps_check = QCheckBox("Timestamp")
+        self.metadata_only_check = QCheckBox("Metadata only")
+        self.dry_run_check = QCheckBox("Dry-run")
+        self.force_check = QCheckBox("Force")
+        for cb in [
+            self.manual_only_check,
+            self.auto_fallback_check,
+            self.keep_cues_check,
+            self.timestamps_check,
+            self.metadata_only_check,
+            self.dry_run_check,
+            self.force_check,
+        ]:
+            row2.addWidget(cb)
+        self.manual_only_check.setChecked(self._setting("transcript_manual_only"))
+        self.auto_fallback_check.setChecked(self._setting("transcript_auto_fallback"))
+        self.keep_cues_check.setChecked(self._setting("transcript_keep_cues"))
+        self.timestamps_check.setChecked(self._setting("transcript_timestamps"))
+        self.metadata_only_check.setChecked(self._setting("transcript_metadata_only"))
+        row2.addStretch()
+        c_lay.addLayout(row2)
+        c_lay.addWidget(hdivider())
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(8)
+
+        self.max_videos_spin = self._make_spin(0, 999999, 0)
+        self.start_index_spin = self._make_spin(0, 999999, 0)
+        self.end_index_spin = self._make_spin(0, 999999, 0)
+        self.retries_spin = self._make_spin(1, 20, self._setting("transcript_retries"))
+        self.progress_interval_spin = self._make_spin(
+            1,
+            10000,
+            self._setting("transcript_progress_interval"),
+        )
+        self.delay_spin = self._make_double_spin(
+            0.0,
+            120.0,
+            self._setting("transcript_delay"),
+        )
+        self.retry_delay_spin = self._make_double_spin(
+            0.0,
+            120.0,
+            self._setting("transcript_retry_delay"),
+        )
+
+        fields = [
+            ("Max videos", self.max_videos_spin),
+            ("Start", self.start_index_spin),
+            ("End", self.end_index_spin),
+            ("Retries", self.retries_spin),
+            ("Progress interval", self.progress_interval_spin),
+            ("Delay", self.delay_spin),
+            ("Retry delay", self.retry_delay_spin),
+        ]
+        for i, (text, widget) in enumerate(fields):
+            row = i // 4
+            col = (i % 4) * 2
+            grid.addWidget(label(text, 11, TEXT3), row, col)
+            grid.addWidget(widget, row, col + 1)
+        c_lay.addLayout(grid)
+
+        self._lay.addWidget(c)
+
+    def _build_run_card(self):
+        c_lay = QHBoxLayout()
+        c = card(c_lay)
+        self.start_btn = make_accent_btn("Baslat", GREEN)
+        self.start_btn.setFixedHeight(46)
+        self.start_btn.clicked.connect(self._emit_start)
+        c_lay.addWidget(self.start_btn, stretch=1)
+
+        self.cancel_btn = QPushButton("Iptal")
+        self.cancel_btn.setObjectName("dangerBtn")
+        self.cancel_btn.setFixedHeight(46)
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.clicked.connect(self.request_cancel.emit)
+        c_lay.addWidget(self.cancel_btn)
+        self._lay.addWidget(c)
+
+    def _build_progress_card(self):
+        c_lay = QVBoxLayout()
+        c = card(c_lay)
+
+        top = QHBoxLayout()
+        self.summary_lbl = label("Bekliyor", 12, TEXT3)
+        top.addWidget(self.summary_lbl)
+        top.addStretch()
+        self.count_lbl = label("0/0", 13, BLUE, bold=True)
+        top.addWidget(self.count_lbl)
+        c_lay.addLayout(top)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 1000)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFixedHeight(10)
+        self.progress_bar.setTextVisible(False)
+        c_lay.addWidget(self.progress_bar)
+
+        self.progress_list = QListWidget()
+        self.progress_list.setMinimumHeight(180)
+        c_lay.addWidget(self.progress_list)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        self.open_output_btn = QPushButton("Open Folder")
+        self.open_primary_btn = QPushButton("Open Report")
+        self.open_secondary_btn = QPushButton("Open Index")
+        for btn in [
+            self.open_output_btn,
+            self.open_primary_btn,
+            self.open_secondary_btn,
+        ]:
+            btn.setFixedHeight(34)
+            btn.setEnabled(False)
+            btn.clicked.connect(lambda _checked=False, b=btn: self._emit_open_path(b))
+            actions.addWidget(btn)
+        actions.addStretch()
+        c_lay.addLayout(actions)
+
+        self._lay.addWidget(c)
+
+    @staticmethod
+    def _make_spin(min_value: int, max_value: int, value: int) -> QSpinBox:
+        spin = QSpinBox()
+        spin.setRange(min_value, max_value)
+        spin.setValue(value)
+        spin.setFixedWidth(84)
+        return spin
+
+    @staticmethod
+    def _make_double_spin(min_value: float, max_value: float, value: float) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(min_value, max_value)
+        spin.setDecimals(2)
+        spin.setSingleStep(0.25)
+        spin.setValue(value)
+        spin.setFixedWidth(84)
+        return spin
+
+    def _paste_url(self):
+        txt = QApplication.clipboard().text().strip()
+        if txt:
+            self.url_entry.setText(txt)
+
+    def _browse_output(self):
+        folder = QFileDialog.getExistingDirectory(self, "Cikti klasoru", self.output_entry.text())
+        if folder:
+            self.output_entry.setText(folder)
+
+    @staticmethod
+    def _optional_int(spin: QSpinBox) -> int | None:
+        return spin.value() or None
+
+    @staticmethod
+    def _parent_path(path_text: str | None) -> str:
+        return str(Path(path_text).parent) if path_text else ""
+
+    def _set_result_button(self, button: QPushButton, text: str, path_text: str | None):
+        button.setText(text)
+        button.setProperty("path", path_text or "")
+        button.setEnabled(bool(path_text))
+
+    def _disable_result_actions(self):
+        self._set_result_button(self.open_output_btn, "Open Folder", None)
+        self._set_result_button(self.open_primary_btn, "Open Report", None)
+        self._set_result_button(self.open_secondary_btn, "Open Index", None)
+
+    def _emit_open_path(self, button: QPushButton):
+        path_text = button.property("path")
+        if path_text:
+            self.request_open_path.emit(str(path_text))
+
+    def update_settings(self, settings: dict):
+        self._settings = settings
+        if self.cancel_btn.isEnabled():
+            return
+        self.output_entry.setText(self._default_output_dir())
+        self.lang_entry.setText(self._setting("transcript_languages"))
+        self.format_combo.setCurrentText(self._setting("transcript_output_format"))
+        self.manual_only_check.setChecked(self._setting("transcript_manual_only"))
+        self.auto_fallback_check.setChecked(self._setting("transcript_auto_fallback"))
+        self.keep_cues_check.setChecked(self._setting("transcript_keep_cues"))
+        self.timestamps_check.setChecked(self._setting("transcript_timestamps"))
+        self.metadata_only_check.setChecked(self._setting("transcript_metadata_only"))
+        self.retries_spin.setValue(self._setting("transcript_retries"))
+        self.retry_delay_spin.setValue(self._setting("transcript_retry_delay"))
+        self.delay_spin.setValue(self._setting("transcript_delay"))
+        self.progress_interval_spin.setValue(self._setting("transcript_progress_interval"))
+
+    def values(self) -> dict:
+        languages = tuple(
+            part.strip()
+            for part in self.lang_entry.text().split(",")
+            if part.strip()
+        )
+        return {
+            "url": self.url_entry.text().strip(),
+            "output_dir": self.output_entry.text().strip(),
+            "languages": languages,
+            "output_format": self.format_combo.currentText(),
+            "manual_only": self.manual_only_check.isChecked(),
+            "auto_fallback": self.auto_fallback_check.isChecked(),
+            "keep_cues": self.keep_cues_check.isChecked(),
+            "timestamps": self.timestamps_check.isChecked(),
+            "metadata_only": self.metadata_only_check.isChecked(),
+            "dry_run": self.dry_run_check.isChecked(),
+            "force": self.force_check.isChecked(),
+            "max_videos": self._optional_int(self.max_videos_spin),
+            "start_index": self._optional_int(self.start_index_spin),
+            "end_index": self._optional_int(self.end_index_spin),
+            "retries": self.retries_spin.value(),
+            "retry_delay": self.retry_delay_spin.value(),
+            "delay": self.delay_spin.value(),
+            "progress_interval": self.progress_interval_spin.value(),
+        }
+
+    def _emit_start(self):
+        data = self.values()
+        if not data["url"]:
+            self.set_status("URL gerekli", RED)
+            return
+        if not data["output_dir"]:
+            self.set_status("Cikti klasoru gerekli", RED)
+            return
+        self.request_start.emit(data)
+
+    def set_running(self, running: bool):
+        self.start_btn.setEnabled(not running)
+        self.cancel_btn.setEnabled(running)
+        for widget in [
+            self.url_entry,
+            self.output_entry,
+            self.lang_entry,
+            self.format_combo,
+            self.max_videos_spin,
+            self.start_index_spin,
+            self.end_index_spin,
+            self.retries_spin,
+            self.retry_delay_spin,
+            self.delay_spin,
+            self.progress_interval_spin,
+        ]:
+            widget.setEnabled(not running)
+        for cb in [
+            self.manual_only_check,
+            self.auto_fallback_check,
+            self.keep_cues_check,
+            self.timestamps_check,
+            self.metadata_only_check,
+            self.dry_run_check,
+            self.force_check,
+        ]:
+            cb.setEnabled(not running)
+
+    def set_status(self, text: str, color: str = TEXT3):
+        self.status_lbl.setText(text)
+        self.status_lbl.setStyleSheet(f"color:{color}; font-size:12px;")
+
+    def reset_progress(self):
+        self.progress_bar.setValue(0)
+        self.progress_list.clear()
+        self.summary_lbl.setText("Bekliyor")
+        self.count_lbl.setText("0/0")
+        self._disable_result_actions()
+
+    def add_progress(self, progress):
+        total = max(1, int(getattr(progress, "total", 1) or 1))
+        index = int(getattr(progress, "index", 0) or 0)
+        self.progress_bar.setValue(int(min(index / total, 1.0) * 1000))
+        self.count_lbl.setText(f"{index}/{total}")
+        action = getattr(progress, "action", "")
+        title = getattr(progress, "title", "")
+        message = getattr(progress, "message", "")
+        item = QListWidgetItem(f"{index:03d}  {action}  {title}  {message}")
+        color_map = {
+            "saved": GREEN,
+            "skip": YELLOW,
+            "repair": YELLOW,
+            "error": RED,
+            "metadata": BLUE,
+            "process": BLUE,
+        }
+        item.setForeground(QColor(color_map.get(action, TEXT2)))
+        self.progress_list.addItem(item)
+        self.progress_list.scrollToBottom()
+
+    def set_result(self, report: dict):
+        self._configure_result_actions(report)
+        if report.get("metadata_only"):
+            count = report.get("selected_count", 0)
+            self.summary_lbl.setText(f"Metadata tamamlandi: {count} video")
+            self.progress_bar.setValue(1000)
+            self.count_lbl.setText(f"{count}/{count}")
+            return
+        if report.get("dry_run"):
+            count = len(report.get("planned", []))
+            self.summary_lbl.setText(f"Dry-run tamamlandi: {count} plan")
+            self.progress_bar.setValue(1000)
+            return
+        processed = report.get("processed_count", 0)
+        skipped = report.get("skipped_count", 0)
+        self.summary_lbl.setText(f"Tamamlandi: {processed} kayit, {skipped} skip")
+        self.progress_bar.setValue(1000)
+
+    def _configure_result_actions(self, report: dict):
+        if report.get("dry_run"):
+            self._disable_result_actions()
+            return
+
+        if report.get("metadata_only"):
+            videos_json_path = report.get("videos_json_path")
+            videos_csv_path = report.get("videos_csv_path")
+            self._set_result_button(
+                self.open_output_btn,
+                "Open Folder",
+                report.get("output_path") or self._parent_path(videos_json_path),
+            )
+            self._set_result_button(self.open_primary_btn, "Open JSON", videos_json_path)
+            self._set_result_button(self.open_secondary_btn, "Open CSV", videos_csv_path)
+            return
+
+        self._set_result_button(self.open_output_btn, "Open Folder", report.get("output_path"))
+        self._set_result_button(self.open_primary_btn, "Open Report", report.get("report_path"))
+        self._set_result_button(self.open_secondary_btn, "Open Index", report.get("index_path"))
 
 
 # ═══════════════════════════════════════════════════════════
@@ -579,13 +877,13 @@ class QueuePage(QWidget):
 #  HISTORY PAGE
 # ═══════════════════════════════════════════════════════════
 class HistoryPage(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, max_history=50):
         super().__init__(parent)
         self._history: list[dict] = load_history()
         self._build()
-        # Başlangıçta yüklenen geçmişi max_history ile kırp (varsayılan 50)
-        if len(self._history) > DEFAULT_SETTINGS["max_history"]:
-            self._history = self._history[:DEFAULT_SETTINGS["max_history"]]
+        # Başlangıçta yüklenen geçmişi kullanıcının max_history ayarıyla kırp
+        if len(self._history) > max_history:
+            self._history = self._history[:max_history]
             save_history(self._history)
         self._refresh_list(self._history)
 
@@ -782,6 +1080,23 @@ class SearchPage(QWidget):
             self.list_widget.addItem("Aranıyor, lütfen bekleyin...")
             self.request_search.emit(q)
 
+    @staticmethod
+    def _format_duration(seconds):
+        if seconds in (None, ""):
+            return "Bilinmiyor"
+        try:
+            seconds = int(float(seconds))
+        except (TypeError, ValueError):
+            return "Bilinmiyor"
+        if seconds <= 0:
+            return "Bilinmiyor"
+
+        minutes, secs = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+        return f"{minutes}:{secs:02d}"
+
     def set_results(self, results: list):
         self.list_widget.clear()
         if not results:
@@ -813,9 +1128,9 @@ class SearchPage(QWidget):
             
             title_lbl = label(r.get('title', 'Başlık Yok'), 14, TEXT, bold=True)
             title_lbl.setWordWrap(True)
-            dur = r.get('duration')
-            dur_str = f"{dur}s" if dur else "Bilinmiyor"
-            info_lbl = label(f"Kanal: {r.get('uploader')} | Süre: {dur_str}", 12, TEXT3)
+            dur_str = self._format_duration(r.get('duration'))
+            uploader = r.get('uploader') or "Bilinmiyor"
+            info_lbl = label(f"Kanal: {uploader} | Süre: {dur_str}", 12, TEXT3)
             
             v = QVBoxLayout()
             v.addWidget(title_lbl)
@@ -867,7 +1182,8 @@ class PlayerPage(QWidget):
 
         lay.addWidget(hdivider())
 
-        self._build_options_card(lay)
+        self.options = OptionsCard(self._settings)
+        lay.addWidget(self.options)
 
         dl_btn = make_accent_btn("⬇ İndir", GREEN)
         dl_btn.setFixedHeight(44)
@@ -878,134 +1194,6 @@ class PlayerPage(QWidget):
         lay.addWidget(self.status_lbl)
 
         lay.addStretch()
-
-    def _build_options_card(self, parent_lay):
-        c_lay = QVBoxLayout()
-        c     = card(c_lay)
-
-        c_lay.addWidget(label("⚙ İndirme Seçenekleri", 12, TEXT2, bold=True))
-
-        row1 = QHBoxLayout(); row1.setSpacing(12)
-
-        # Quality
-        qcol = QVBoxLayout(); qcol.setSpacing(4)
-        qcol.addWidget(label("Kalite", 11, TEXT3))
-        self.quality_combo = QComboBox()
-        self.quality_combo.addItems(VIDEO_QUALITIES)
-        self.quality_combo.setCurrentText(self._settings.get("default_quality", "Best Quality"))
-        self.quality_combo.currentTextChanged.connect(self._on_quality_changed)
-        qcol.addWidget(self.quality_combo)
-        row1.addLayout(qcol)
-
-        # Format
-        fcol = QVBoxLayout(); fcol.setSpacing(4)
-        fcol.addWidget(label("Format", 11, TEXT3))
-        self.format_combo = QComboBox()
-        self.format_combo.addItems(VIDEO_FORMATS)
-        self.format_combo.currentTextChanged.connect(self._on_format_changed)
-        fcol.addWidget(self.format_combo)
-        row1.addLayout(fcol)
-
-        # Audio Quality
-        acol = QVBoxLayout(); acol.setSpacing(4); acol.setContentsMargins(0, 0, 0, 0)
-        acol.addWidget(label("Ses Kalitesi", 11, TEXT3))
-        self.aq_combo = QComboBox()
-        self.aq_combo.addItems(AUDIO_QUALITIES)
-        self.aq_combo.setCurrentText(self._settings.get("default_audio_quality", "192"))
-        acol.addWidget(self.aq_combo)
-        self._aq_widget = QWidget(); self._aq_widget.setLayout(acol)
-        sp = self._aq_widget.sizePolicy()
-        sp.setRetainSizeWhenHidden(False)
-        self._aq_widget.setSizePolicy(sp)
-        self._aq_widget.hide()
-        row1.addWidget(self._aq_widget)
-
-        # Save path
-        pcol = QVBoxLayout(); pcol.setSpacing(4)
-        pcol.addWidget(label("Kayıt Klasörü", 11, TEXT3))
-        prow = QHBoxLayout(); prow.setSpacing(6)
-        self.path_entry = QLineEdit(
-            self._settings.get("download_path", os.path.expanduser("~/Downloads"))
-        )
-        self.path_entry.setReadOnly(True)
-        self.path_entry.setFixedHeight(36)
-        prow.addWidget(self.path_entry, stretch=1)
-        br = QPushButton("📁"); br.setFixedSize(36, 36); br.clicked.connect(self._browse_path)
-        prow.addWidget(br)
-        pcol.addLayout(prow)
-        row1.addLayout(pcol, stretch=1)
-
-        c_lay.addLayout(row1)
-        c_lay.addWidget(hdivider())
-
-        # Time Range
-        c_lay.addWidget(label("Zaman Aralığı / Kırpma (Opsiyonel)", 12, TEXT2))
-        trow = QHBoxLayout(); trow.setSpacing(12)
-        
-        scol = QVBoxLayout(); scol.setSpacing(4)
-        scol.addWidget(label("Başlangıç (SS:DD:SS)", 11, TEXT3))
-        self.start_time = QLineEdit()
-        self.start_time.setPlaceholderText("00:00:00")
-        self.start_time.setFixedWidth(100)
-        scol.addWidget(self.start_time)
-        trow.addLayout(scol)
-
-        ecol = QVBoxLayout(); ecol.setSpacing(4)
-        ecol.addWidget(label("Bitiş (SS:DD:SS)", 11, TEXT3))
-        self.end_time = QLineEdit()
-        self.end_time.setPlaceholderText("00:00:00")
-        self.end_time.setFixedWidth(100)
-        ecol.addWidget(self.end_time)
-        trow.addLayout(ecol)
-        
-        trow.addStretch()
-        c_lay.addLayout(trow)
-        c_lay.addWidget(hdivider())
-
-        # Checkboxes
-        row2 = QHBoxLayout(); row2.setSpacing(20)
-        self.subs_check  = QCheckBox("Altyazı göm")
-        self.thumb_check = QCheckBox("Küçük resim göm")
-        self.desc_check  = QCheckBox("Açıklamayı kaydet")
-        for cb, key in [
-            (self.subs_check,  "embed_subtitles"),
-            (self.thumb_check, "embed_thumbnail"),
-            (self.desc_check,  "write_description"),
-        ]:
-            cb.setChecked(self._settings.get(key, False))
-            row2.addWidget(cb)
-        row2.addStretch()
-        c_lay.addLayout(row2)
-
-        parent_lay.addWidget(c)
-        self._on_quality_changed(self.quality_combo.currentText())
-
-    def _browse_path(self):
-        folder = QFileDialog.getExistingDirectory(self, "Klasör Seç", self.path_entry.text())
-        if folder:
-            self.path_entry.setText(folder)
-            self._settings["download_path"] = folder
-            save_settings(self._settings)
-
-    def _on_quality_changed(self, quality: str):
-        is_audio = (quality == "Audio Only")
-        self._aq_widget.setVisible(is_audio)
-        self.format_combo.blockSignals(True)
-        self.format_combo.clear()
-        self.format_combo.addItems(AUDIO_FORMATS if is_audio else VIDEO_FORMATS)
-        df = self._settings.get("default_format", "mp4")
-        if is_audio:
-            self.format_combo.setCurrentText(df if df in AUDIO_FORMATS else "mp3")
-        else:
-            self.format_combo.setCurrentText(df if df in VIDEO_FORMATS else "mp4")
-        self.format_combo.blockSignals(False)
-        self._on_format_changed(self.format_combo.currentText())
-
-    def _on_format_changed(self, fmt: str):
-        can_embed = fmt in THUMBNAIL_EMBED_SUPPORTED
-        self.thumb_check.setVisible(can_embed)
-        if not can_embed:
-            self.thumb_check.setChecked(False)
 
     def set_status(self, txt, color=TEXT3):
         self.status_lbl.setText(txt)
@@ -1019,20 +1207,9 @@ class PlayerPage(QWidget):
 
     def _do_download(self):
         url = self.url_input.text().strip()
-        if not url: return
-        item = QueueItem(
-            url              = url,
-            quality          = self.quality_combo.currentText(),
-            fmt              = self.format_combo.currentText(),
-            output_dir       = self.path_entry.text(),
-            subtitles        = self.subs_check.isChecked(),
-            audio_quality    = self.aq_combo.currentText(),
-            playlist_items   = "",
-            embed_thumbnail  = self.thumb_check.isChecked(),
-            write_description= self.desc_check.isChecked(),
-            start_time       = self.start_time.text().strip() or None,
-            end_time         = self.end_time.text().strip() or None
-        )
+        if not url:
+            return
+        item = QueueItem(url=url, playlist_items="", **self.options.values())
         self.request_download.emit(item)
 
 # ═══════════════════════════════════════════════════════════

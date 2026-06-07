@@ -1,5 +1,6 @@
 
-import os, json, datetime, weakref, subprocess, sys, threading
+import os, datetime, subprocess, sys, threading
+from pathlib import Path
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
@@ -7,7 +8,11 @@ from utils.theme import *
 from core.config import *
 from ui.components.widgets import *
 from ui.pages.pages import *
-from downloader import Downloader, AUDIO_FORMATS, VIDEO_FORMATS, AUDIO_QUALITIES, VIDEO_QUALITIES, SUPPORTED_BROWSERS, THUMBNAIL_EMBED_SUPPORTED, BROWSER_PROFILE_PATHS
+from downloader import Downloader
+from core.transcripts import TranscriptRequest
+from transcript_worker import TranscriptWorker
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -29,6 +34,10 @@ class MainWindow(QMainWindow):
         self._queue: list[QueueItem] = []
         self._queue_running  = False
         self._pending: QueueItem | None = None
+        self._is_transcribing = False
+        self._transcript_worker = None
+        self._last_transcript_options = None
+        self._transcript_retry_options = None
 
         self.bridge = Bridge()
         self.bridge.progress.connect(self._on_progress)
@@ -38,6 +47,7 @@ class MainWindow(QMainWindow):
         self.bridge.playlist_ready.connect(self._on_playlist_ready)
         self.bridge.info_fetched.connect(self._on_info_fetched)
         self.bridge.postprocess.connect(self._on_postprocess)
+        self.bridge.log.connect(self._on_log)
 
         self.downloader = Downloader()
         self.downloader.progress.connect(self.bridge.progress.emit)
@@ -49,7 +59,7 @@ class MainWindow(QMainWindow):
 
         self.schedule_timer = QTimer(self)
         self.schedule_timer.timeout.connect(self._check_schedule)
-        self.target_time = None
+        self._target_dt = None
 
         self.setAcceptDrops(True)
         self._build_ui()
@@ -57,6 +67,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         if self._is_downloading:
             self.downloader.cancel()
+        if self._is_transcribing and self._transcript_worker:
+            self._transcript_worker.cancel()
         event.accept()
 
     def resizeEvent(self, event):
@@ -151,6 +163,7 @@ class MainWindow(QMainWindow):
             ("⬇", "İndir",     self._make_download_page()),
             ("⏳", "Kuyruk",    self._make_queue_page()),
             ("🔍", "Arama",     self._make_search_page()),
+            ("T", "Transkriptler", self._make_transcript_page()),
             ("▶", "Oynatıcı",  self._make_player_page()),
             ("📋", "Geçmiş",    self._make_history_page()),
             ("📄", "Günlükler", self._make_logs_page()),
@@ -220,6 +233,13 @@ class MainWindow(QMainWindow):
         self.search_page.request_queue_url.connect(self._add_search_url_to_queue)
         return self.search_page
 
+    def _make_transcript_page(self) -> TranscriptPage:
+        self.transcript_page = TranscriptPage(self.settings)
+        self.transcript_page.request_start.connect(self._start_transcript)
+        self.transcript_page.request_cancel.connect(self._cancel_transcript)
+        self.transcript_page.request_open_path.connect(self._open_transcript_path)
+        return self.transcript_page
+
     def _make_player_page(self) -> PlayerPage:
         self.player_page = PlayerPage(self.settings)
         self.player_page.request_play.connect(self._play_video)
@@ -250,11 +270,12 @@ class MainWindow(QMainWindow):
                         stream_url = formats[-1].get('url')
 
                 if stream_url:
-                    import subprocess
-                    import os
-                    import sys
                     if getattr(sys, 'frozen', False):
-                        base = sys._MEIPASS
+                        _base_exe = os.path.dirname(sys.executable)
+                        if os.path.exists(os.path.join(_base_exe, "ffplay.exe")):
+                            base = _base_exe
+                        else:
+                            base = sys._MEIPASS
                     else:
                         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                     ffplay_path = os.path.join(base, "ffplay.exe")
@@ -263,14 +284,13 @@ class MainWindow(QMainWindow):
                         ffplay_path = "ffplay"
                     
                     cmd = [ffplay_path, "-window_title", "YT-DLP Media Tool Oynatıcı", "-autoexit", stream_url]
-                    self.logs_page.append(f"ffplay başlatılıyor...", BLUE)
+                    self.bridge.log.emit("ffplay başlatılıyor...", BLUE)
                     subprocess.Popen(cmd)
                 else:
                     self.bridge.error.emit("Akış bağlantısı bulunamadı.")
             except Exception as e:
                 self.bridge.error.emit(f"Oynatıcı hatası: {str(e)}")
-                
-        import threading
+
         threading.Thread(target=run, daemon=True).start()
 
     def _download_from_player(self, item: QueueItem):
@@ -297,29 +317,51 @@ class MainWindow(QMainWindow):
         self._add_urls_to_queue([url])
 
     def _schedule_queue(self):
-        time_str, ok = QInputDialog.getText(self, "İndirmeyi Zamanla", "Başlama saatini girin (SS:DD, örn. 03:00):")
+        time_str, ok = QInputDialog.getText(
+            self,
+            "İndirmeyi Zamanla",
+            "Başlama zamanı (SS:DD veya YYYY-AA-GG SS:DD, örn. 03:00):",
+        )
         if ok and time_str:
-            t = QTime.fromString(time_str.strip(), "hh:mm")
-            if t.isValid():
-                self.target_time = t
-                self.schedule_timer.start(60000) # Check every minute
-                self.q_page.schedule_btn.setText(f"⏳ {t.toString('hh:mm')}'da başlayacak")
-                self.logs_page.append(f"Kuyruk başlatılması saat {t.toString('hh:mm')} için zamanlandı.", GREEN)
+            target = self._parse_schedule_target(time_str)
+            if target:
+                self._target_dt = target
+                self.schedule_timer.start(1000)
+                display = target.toString("yyyy-MM-dd HH:mm")
+                self.q_page.schedule_btn.setText(f"⏳ {display}'da başlayacak")
+                self.logs_page.append(f"Kuyruk başlatılması {display} için zamanlandı.", GREEN)
             else:
-                self._toast("Geçersiz saat formatı!", RED)
+                self._toast("Geçersiz veya geçmiş zaman!", RED)
+
+    @staticmethod
+    def _parse_schedule_target(raw, now=None):
+        raw = raw.strip()
+        if now is None:
+            now = QDateTime.currentDateTime()
+
+        target = QDateTime.fromString(raw, "yyyy-MM-dd HH:mm")
+        if target.isValid():
+            return target if target > now else None
+
+        t = QTime.fromString(raw, "hh:mm")
+        if not t.isValid():
+            return None
+
+        target = QDateTime(now.date(), t)
+        if target <= now:
+            target = target.addDays(1)
+        return target
 
     def _check_schedule(self):
-        if self.target_time:
-            now = QTime.currentTime()
-            if now.hour() == self.target_time.hour() and now.minute() == self.target_time.minute():
-                self.schedule_timer.stop()
-                self.target_time = None
-                self.q_page.schedule_btn.setText("⏰ Zamanla")
-                self.logs_page.append("Zamanlanan indirme başlatılıyor!", GREEN)
-                self._start_queue()
+        if self._target_dt and QDateTime.currentDateTime() >= self._target_dt:
+            self.schedule_timer.stop()
+            self._target_dt = None
+            self.q_page.schedule_btn.setText("⏰ Zamanla")
+            self.logs_page.append("Zamanlanan indirme başlatılıyor!", GREEN)
+            self._start_queue()
 
     def _make_history_page(self) -> HistoryPage:
-        self.hist_page = HistoryPage()
+        self.hist_page = HistoryPage(max_history=self.settings.get("max_history", 50))
         return self.hist_page
 
     def _make_logs_page(self) -> LogsPage:
@@ -327,11 +369,171 @@ class MainWindow(QMainWindow):
         return self.logs_page
 
     def _switch_page(self, name: str):
-        names = ["İndir", "Kuyruk", "Arama", "Oynatıcı", "Geçmiş", "Günlükler"]
+        names = ["İndir", "Kuyruk", "Arama", "Transkriptler", "Oynatıcı", "Geçmiş", "Günlükler"]
         idx   = names.index(name) if name in names else 0
         self._pages.setCurrentIndex(idx)
         for i, btn in enumerate(self._sidebar_btns):
             btn.setActive(i == idx)
+
+    @staticmethod
+    def _build_transcript_request(options: dict) -> TranscriptRequest:
+        return TranscriptRequest(
+            url=options["url"],
+            output_dir=Path(options["output_dir"]),
+            languages=tuple(options.get("languages") or ()),
+            manual_only=options.get("manual_only", False),
+            auto_fallback=options.get("auto_fallback", True),
+            keep_cues=options.get("keep_cues", False),
+            dry_run=options.get("dry_run", False),
+            force=options.get("force", False),
+            max_videos=options.get("max_videos"),
+            start_index=options.get("start_index"),
+            end_index=options.get("end_index"),
+            retries=options.get("retries", 3),
+            retry_delay=options.get("retry_delay", 2.0),
+            delay=options.get("delay", 0.5),
+            output_format=options.get("output_format", "both"),
+            timestamps=options.get("timestamps", False),
+            metadata_only=options.get("metadata_only", False),
+            progress_interval=options.get("progress_interval", 10),
+        )
+
+    def _start_transcript(self, options: dict):
+        if self._is_transcribing:
+            self._toast("Transcript zaten calisiyor", YELLOW)
+            return
+        if getattr(self, "_is_downloading", False) or getattr(self, "_queue_running", False):
+            self._toast("Media download active; transcript runs independently", YELLOW)
+            self.logs_page.append(
+                "Transcript media download ile paralel calisiyor; kuyruk degistirilmiyor",
+                YELLOW,
+            )
+        try:
+            request = self._build_transcript_request(options)
+        except Exception as exc:
+            self.transcript_page.set_status(f"Hata: {exc}", RED)
+            self.logs_page.append(f"Transcript istegi hatali: {exc}", RED)
+            return
+
+        self._last_transcript_options = dict(options)
+        self._is_transcribing = True
+        self.transcript_page.reset_progress()
+        self.transcript_page.set_running(True)
+        self.transcript_page.set_status("Calisiyor", BLUE)
+        self.logs_page.append(f"Transcript basladi: {request.url}", BLUE)
+
+        worker = TranscriptWorker(
+            request,
+            cookie_browser=self.downloader.cookie_browser,
+            cookie_browser_profile=self.downloader.cookie_browser_profile,
+            cookie_file=self.downloader.cookie_file,
+        )
+        self._transcript_worker = worker
+        worker.signals.progress.connect(self._on_transcript_progress)
+        worker.signals.log.connect(lambda msg: self.logs_page.append(f"Transcript: {msg}", TEXT3))
+        worker.signals.result.connect(self._on_transcript_result)
+        worker.signals.error.connect(self._on_transcript_error)
+        worker.signals.error_detail.connect(lambda msg: self.logs_page.append(msg, RED))
+        worker.signals.cancelled.connect(self._on_transcript_cancelled)
+        worker.signals.finished.connect(self._on_transcript_finished)
+        QThreadPool.globalInstance().start(worker)
+
+    def _cancel_transcript(self):
+        if not self._transcript_worker:
+            return
+        self._transcript_worker.cancel()
+        self.transcript_page.set_status("Iptal ediliyor", YELLOW)
+        self.logs_page.append("Transcript iptal istendi", YELLOW)
+
+    def _on_transcript_progress(self, progress):
+        self.transcript_page.add_progress(progress)
+        action = getattr(progress, "action", "")
+        title = getattr(progress, "title", "")
+        message = getattr(progress, "message", "")
+        color_map = {
+            "saved": GREEN,
+            "skip": YELLOW,
+            "repair": YELLOW,
+            "metadata": BLUE,
+            "error": RED,
+        }
+        self.logs_page.append(
+            f"Transcript {action}: {title} {message}".strip(),
+            color_map.get(action, TEXT3),
+        )
+
+    def _on_transcript_result(self, report: dict):
+        self.transcript_page.set_result(report)
+        self.transcript_page.set_status("Tamamlandi", GREEN)
+        if report.get("metadata_only"):
+            self.logs_page.append(
+                f"Transcript metadata tamamlandi: {report.get('selected_count', 0)} video",
+                GREEN,
+            )
+        elif report.get("dry_run"):
+            self.logs_page.append(
+                f"Transcript dry-run tamamlandi: {len(report.get('planned', []))} plan",
+                GREEN,
+            )
+        else:
+            processed = report.get("processed_count", 0)
+            skipped = report.get("skipped_count", 0)
+            repaired = report.get("partial_repaired_count", 0)
+            self.logs_page.append(
+                f"Transcript tamamlandi: {processed} kayit, {skipped} skip, {repaired} repair",
+                GREEN,
+            )
+        self._toast("Transcript tamamlandi", GREEN)
+
+    def _on_transcript_error(self, msg: str):
+        if msg == "COOKIE_DB_LOCKED":
+            browser = self.downloader.cookie_browser or "browser"
+            dlg = CookieLockedDialog(browser, parent=self)
+            if dlg.exec() and self._last_transcript_options:
+                choice = dlg.choice()
+                if choice == "retry":
+                    self.transcript_page.set_status("Tekrar deneniyor", BLUE)
+                    self.logs_page.append("Transcript cookie kilidi: tekrar deneniyor", YELLOW)
+                    self._transcript_retry_options = dict(self._last_transcript_options)
+                elif choice == "file":
+                    self._apply_cookie(None, dlg.file_path())
+                    self.transcript_page.set_status("Cerez dosyasiyla tekrar deneniyor", BLUE)
+                    self.logs_page.append("Transcript cookie dosyasi ile tekrar deneniyor", YELLOW)
+                    self._transcript_retry_options = dict(self._last_transcript_options)
+            else:
+                self.transcript_page.set_status("Cerez veritabani kilitli", RED)
+                self.logs_page.append("Transcript cookie veritabani kilitli", RED)
+            return
+
+        self.transcript_page.set_status(f"Hata: {msg[:80]}", RED)
+        self.logs_page.append(f"Transcript hatasi: {msg}", RED)
+        self._toast(f"Transcript hatasi: {msg[:50]}", RED)
+
+    def _on_transcript_cancelled(self, msg: str):
+        self.transcript_page.set_status("Iptal edildi", TEXT3)
+        self.logs_page.append(f"Transcript iptal edildi: {msg}", YELLOW)
+        self._toast("Transcript iptal edildi", YELLOW)
+
+    def _on_transcript_finished(self):
+        retry_options = self._transcript_retry_options
+        self._transcript_retry_options = None
+        self._is_transcribing = False
+        self._transcript_worker = None
+        self.transcript_page.set_running(False)
+        if retry_options:
+            QTimer.singleShot(0, lambda: self._start_transcript(retry_options))
+
+    def _open_transcript_path(self, path_text: str):
+        path = Path(path_text)
+        if not path.exists():
+            self.logs_page.append(f"Transcript path bulunamadi: {path}", RED)
+            self._toast("Transcript path bulunamadi", RED)
+            return
+        if QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            self.logs_page.append(f"Transcript path acildi: {path}", BLUE)
+        else:
+            self.logs_page.append(f"Transcript path acilamadi: {path}", RED)
+            self._toast("Transcript path acilamadi", RED)
 
     # ═══════════════════════════════════════════════════════
     #  DOWNLOAD FLOW
@@ -455,6 +657,10 @@ class MainWindow(QMainWindow):
     def _on_postprocess(self):
         self.dl_page.show_postprocess(True)
 
+    def _on_log(self, msg: str, color: str):
+        # Çalışan thread'lerden gelen log isteklerini GUI thread'inde işle.
+        self.logs_page.append(msg, color or TEXT2)
+
     def _on_complete(self, info):
         # ── Get Info only ──────────────────────────────────
         if isinstance(info, dict) and info.get("_type") == "info_only":
@@ -537,6 +743,7 @@ class MainWindow(QMainWindow):
                 if q.status == "downloading":
                     q.status = "done"
                     break
+            self._pending = None
             self.q_page.refresh(self._queue)
             self.dl_page.reset_progress()
             self.dl_page.reset_preview()
@@ -545,6 +752,7 @@ class MainWindow(QMainWindow):
             self.dl_page.set_status("Tamamlandı ✓", GREEN)
             self._toast("İndirme tamamlandı!", GREEN)
             QTimer.singleShot(1500, self.dl_page.reset_preview)
+            self._pending = None
 
     def _on_error(self, msg: str):
         self._is_downloading = False
@@ -644,6 +852,7 @@ class MainWindow(QMainWindow):
             save_settings(self.settings)
             self.setStyleSheet(build_stylesheet(self.settings.get("theme_accent", BLUE)))
             self.dl_page.update_settings(self.settings)
+            self.transcript_page.update_settings(self.settings)
             self._toast("Ayarlar kaydedildi", GREEN)
 
     def _open_cookie_dialog(self):
@@ -684,4 +893,4 @@ class MainWindow(QMainWindow):
         t = Toast(self, text, color)
         t.show()
 
-
+
